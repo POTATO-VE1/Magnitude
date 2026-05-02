@@ -76,7 +76,13 @@ pip install -r requirements.txt
 ```
 
 ### 4. Download a Sample Image Dataset
-If you don't have a folder of images ready, you can quickly download a few sample images to test the database:
+If you don't have a folder of images ready, you can download a 5,000 image dataset (COCO 2017 Validation Set - ~800MB) to really test the database's power:
+```bash
+wget http://images.cocodataset.org/zips/val2017.zip
+unzip val2017.zip
+```
+
+Or, for a quick test, you can download just a few sample images:
 ```bash
 mkdir -p sample_images
 cd sample_images
@@ -86,9 +92,9 @@ cd ..
 ```
 
 ### 5. Ingest Images
-Point the ingest script to your image directory. This will convert your images into 512-dimensional embeddings and store them in the VectorDB:
+Point the ingest script to your image directory (e.g., `val2017` if you downloaded the 5k dataset). This will convert your images into 512-dimensional embeddings and store them in the VectorDB:
 ```bash
-python ingest.py --dir sample_images --batch-size 16
+python ingest.py --dir val2017 --batch-size 16
 ```
 
 ### 6. Semantic Search!
