@@ -1,4 +1,4 @@
-# VectorDB
+# Magnitude VectorDB
 
 A lightweight, high-performance vector database built in Go, featuring a custom Python client for CLIP-powered semantic image search.
 
@@ -16,35 +16,87 @@ This project implements a barebones yet robust vector search engine from scratch
 -   **Semantic Image Search:** Out-of-the-box Python CLI tool that converts text queries into vectors to find matching images in your local dataset.
 -   **Interactive UI:** Search results are rendered instantly in a clean, local HTML/CSS lightbox UI.
 
+## Prerequisites & Installation
+
+Before running the project, you need `git`, `Go` (1.25+), and `Python` (3.9+) installed on your system. Run the command for your Operating System below:
+
+**Ubuntu / Debian**
+```bash
+sudo apt update && sudo apt install git golang python3 python3-venv python3-pip
+```
+
+**Fedora**
+```bash
+sudo dnf install git golang python3 python3-pip
+```
+
+**Arch Linux**
+```bash
+sudo pacman -S git go python python-pip python-virtualenv
+```
+
+**macOS (via Homebrew)**
+```bash
+brew install git go python
+```
+
+**Windows (via Winget)**
+```powershell
+winget install Git.Git GoLang.Go Python.Python.3.12
+```
+
 ## Quick Start
 
-### 1. Start the Go Server
-Ensure you have Go installed (1.25+), then start the backend server:
+### 1. Clone the Repository
+Download the code to your local machine:
+```bash
+git clone https://github.com/YOUR_USERNAME/vector_db.git
+cd vector_db
+```
+
+### 2. Start the Go Backend Server
+Start the high-performance Go database server in the background (or in a separate terminal):
 ```bash
 go run cmd/server/main.go
 ```
 
-### 2. Setup the Python Client
-In a new terminal, set up your virtual environment and install dependencies:
+### 3. Setup the Python Client
+Open a new terminal window, navigate to the client folder, and install the AI dependencies. (Note: The CLIP model weights will be downloaded automatically on the first run).
 ```bash
 cd python-client
-python -m venv venv
-source venv/bin/activate  # or activate.fish if using fish shell
+python3 -m venv venv
+
+# Activate the virtual environment:
+# On Linux/macOS:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### 3. Ingest Images
-Point the ingest script to a directory of images to generate and store their embeddings in the database:
+### 4. Download a Sample Image Dataset
+If you don't have a folder of images ready, you can quickly download a few sample images to test the database:
 ```bash
-python ingest.py --dir path/to/your/images --batch-size 16
+mkdir -p sample_images
+cd sample_images
+curl -LO https://raw.githubusercontent.com/pytorch/hub/master/images/dog.jpg
+curl -LO https://upload.wikimedia.org/wikipedia/commons/3/3a/Cat03.jpg
+cd ..
 ```
 
-### 4. Search
-Run the interactive REPL to search your database using natural language:
+### 5. Ingest Images
+Point the ingest script to your image directory. This will convert your images into 512-dimensional embeddings and store them in the VectorDB:
+```bash
+python ingest.py --dir sample_images --batch-size 16
+```
+
+### 6. Semantic Search!
+Run the interactive search prompt:
 ```bash
 python search.py
 ```
-Type a query (e.g., "a dog playing in snow") and your browser will automatically open with the top visual matches!
+Type a query (e.g., "a dog playing" or "a cute cat") and your browser will automatically open with the top visual matches ranked by similarity!
 
 ## Architecture
 
