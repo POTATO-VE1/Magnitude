@@ -1,0 +1,96 @@
+# VectorDB Configuration
+# All values shown are the production defaults.
+# Override only what you need to change.
+
+server:
+  # Address for the main HTTPS API server.
+  addr: ":8443"
+
+  # Address for internal metrics (Prometheus) and pprof endpoints.
+  # MUST be bound to localhost only in production — never expose to the internet.
+  internalPort: ":9090"
+
+  # TLS certificate and key. Required for HTTPS.
+  # Generate a self-signed cert for development:
+  #   mkdir -p certs && openssl req -x509 -newkey rsa:4096 \
+  #     -keyout certs/server.key -out certs/server.crt \
+  #     -days 365 -nodes -subj '/CN=localhost'
+  certFile: "certs/server.crt"
+  keyFile: "certs/server.key"
+
+  # Timeouts — protect against slow clients and runaway queries.
+  readTimeout: "30s"
+  readHeaderTimeout: "5s"   # Slow-loris protection
+  writeTimeout: "30s"
+  shutdownTimeout: "30s"
+
+  # Maximum number of bytes to read from request headers. Default: 16 KiB.
+  maxHeaderBytes: 16384
+
+auth:
+  # SHA-256 hashes (hex-encoded) of valid API keys.
+  # Raw keys are NEVER stored. To add a key:
+  #   echo -n "my-secret-api-key" | sha256sum
+  # Example (DO NOT use this hash in production):
+  # keyHashes:
+  #   - "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+  keyHashes: []
+
+rateLimit:
+  # Search endpoint: 100 req/s sustained, burst up to 200.
+  searchRPS: 100
+  searchBurst: 200
+
+  # Insert endpoint: 50 req/s sustained, burst up to 100.
+  # Lower than search because inserts touch the WAL and may trigger rebuilds.
+  insertRPS: 50
+  insertBurst: 100
+
+storage:
+  # Root directory for all on-disk data: WAL files, segments, SQLite database.
+  dataDir: "./data"
+
+  # Maximum number of vectors to pre-allocate in the memory-mapped file.
+  # Each float32 vector of dimension D consumes 4*D bytes.
+  # At 768D: 1,000,000 vectors = ~3 GB of mmap space.
+  mmapCapacity: 1000000
+
+index:
+  # Active index type. Options: "flat", "ivf", "hnsw"
+  # - flat: brute-force, perfect recall, O(N) search — use for N < 100k or correctness testing
+  # - ivf:  inverted file index, sub-linear search with tunable recall via nprobe
+  # - hnsw: hierarchical navigable small world graph, best recall/speed tradeoff
+  type: "flat"
+
+  # IVF: number of Voronoi cells (clusters). Rule of thumb: sqrt(N).
+  # For 1M vectors: numClusters = 1000. Re-run K-Means after major data changes.
+  numClusters: 256
+
+  # IVF: number of cells to probe at search time.
+  # Higher nprobe = better recall but slower search.
+  # Calibrate using the recall benchmark at each nprobe value.
+  defaultNprobe: 5
+
+  # HNSW: maximum bidirectional connections per node per layer.
+  # Range: 8–48. Lower M = less memory; higher M = better recall.
+  # m=16 is the standard starting point validated across many datasets.
+  m: 16
+
+  # HNSW: beam width during graph construction.
+  # Must be > m. Higher = better graph quality + slower inserts.
+  # Typical range: 100–500. 200 balances quality and insert speed.
+  efConstruction: 200
+
+  # HNSW: beam width during search (efSearch).
+  # Higher = better recall + slower search. Must be >= k.
+  defaultEf: 50
+
+  # Fraction of soft-deleted vectors that triggers automatic Rebuild().
+  # At 0.10, a Rebuild is triggered when 10% of indexed vectors are tombstoned.
+  dirtyThreshold: 0.10
+
+gc:
+  # Go runtime GC target percentage. Passed to runtime.SetGCPercent().
+  # 100 = default (GC when heap grows 100% above live set).
+  # Increase to 200 for workloads with large stable mmap memory.
+  percent: 100
