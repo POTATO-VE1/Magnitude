@@ -50,8 +50,8 @@ winget install Git.Git GoLang.Go Python.Python.3.12
 ### 1. Clone the Repository
 Download the code to your local machine:
 ```bash
-git clone https://github.com/YOUR_USERNAME/vector_db.git
-cd vector_db
+git clone https://github.com/POTATO-VE1/Magnitude.git
+cd Magnitude
 ```
 
 ### 2. Start the Go Backend Server
