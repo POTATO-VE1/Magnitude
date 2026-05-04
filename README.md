@@ -149,7 +149,7 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for a detailed system diagram and compo
 
 ## AI-Assisted Development
 
-Magnitude was built with significant AI agent assistance. Architecture decisions, debugging sessions, API design, and documentation were all developed collaboratively with Claude Code and Antigravity. See [`agents.md`](agents.md) for a full breakdown of how agents shaped this project.
+Magnitude was built with significant AI agent assistance. Architecture decisions, debugging sessions, API design, and documentation were all developed collaboratively with Claude Code and Antigravity.
 
 ## Roadmap
 
