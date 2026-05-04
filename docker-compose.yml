@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  magnitude:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8443:8443"
+    volumes:
+      - magnitude_data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://localhost:8443/api/v2/tenants"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  magnitude_data:
