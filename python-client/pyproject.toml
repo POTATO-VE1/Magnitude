@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "magnitude-client"
+version = "0.1.0"
+description = "Python client for the Magnitude vector database"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Magnitude Team" },
+]
+keywords = ["vector-database", "embeddings", "clip", "semantic-search", "similarity-search"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+embed = [
+    "sentence-transformers>=2.2.0",
+    "torch>=2.0.0",
+    "Pillow>=9.0.0",
+]
+cli = [
+    "rich>=13.0.0",
+    "tqdm>=4.60.0",
+]
+all = [
+    "magnitude-client[embed,cli]",
+]
+
+[project.urls]
+Homepage = "https://github.com/POTATO-VE1/Magnitude"
+Repository = "https://github.com/POTATO-VE1/Magnitude"
+Issues = "https://github.com/POTATO-VE1/Magnitude/issues"
+
+[project.scripts]
+magnitude-ingest = "magnitude.cli.ingest:main"
+magnitude-search = "magnitude.cli.search:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/magnitude"]

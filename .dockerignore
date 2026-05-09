@@ -1,0 +1,48 @@
+# Runtime data
+data/
+
+# SSL certificates (never bake into image)
+certs/
+*.pem
+*.key
+*.crt
+
+# Environment secrets
+*.env
+*.env.*
+!.env.example
+
+# Python virtual environment
+python-client/venv/
+
+# Downloaded image datasets
+python-client/images/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Test files
+*_test.go
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE / tool folders
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+LICENSE
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.bak

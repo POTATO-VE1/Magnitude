@@ -121,6 +121,13 @@ type IndexConfig struct {
 	// DirtyThreshold is the fraction of deleted vectors that triggers an automatic
 	// Rebuild(). At 0.10, rebuilds when 10% of vectors have been soft-deleted.
 	DirtyThreshold float64 `yaml:"dirtyThreshold"`
+
+	// SnapshotInterval controls how often HNSW snapshots are taken.
+	// 0 = only on shutdown. Default: 5 minutes.
+	SnapshotInterval time.Duration `yaml:"snapshotInterval"`
+
+	// SnapshotOnShutdown triggers an HNSW snapshot during graceful shutdown. Default: true.
+	SnapshotOnShutdown bool `yaml:"snapshotOnShutdown"`
 }
 
 // GCConfig holds Go runtime garbage collector tuning.
@@ -250,13 +257,15 @@ func DefaultConfig() *Config {
 			MmapCapacity: 1_000_000,
 		},
 		Index: IndexConfig{
-			Type:           "flat",
-			NumClusters:    256,
-			DefaultNprobe:  5,
-			M:              16,
-			EfConstruction: 200,
-			DefaultEf:      50,
-			DirtyThreshold: 0.10,
+			Type:               "flat",
+			NumClusters:        256,
+			DefaultNprobe:      5,
+			M:                  16,
+			EfConstruction:     200,
+			DefaultEf:          50,
+			DirtyThreshold:     0.10,
+			SnapshotInterval:   5 * time.Minute,
+			SnapshotOnShutdown: true,
 		},
 		GC: GCConfig{
 			Percent: 100,

@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 
 	"github.com/POTATO-VE1/Magnitude/internal/events"
@@ -46,11 +47,13 @@ type Collection struct {
 
 // Manager manages all collections and routes API operations.
 type Manager struct {
-	mu          sync.RWMutex
-	collections map[string]*Collection // collection ID → Collection
-	sysdb       *metadata.SysDB
-	wal         storage.WAL
-	flowBus     *events.FlowBus // optional — nil disables event notifications
+	mu             sync.RWMutex
+	collections    map[string]*Collection // collection ID → Collection
+	sysdb          *metadata.SysDB
+	wal            storage.WAL
+	flowBus        *events.FlowBus   // optional — nil disables event notifications
+	dataDir        string            // root data directory for snapshot storage
+	snapshotSeqIDs map[string]uint64 // collection ID → snapshot seqID for partial WAL replay
 }
 
 // SysDB returns the underlying system database for direct access by API handlers.
@@ -66,12 +69,18 @@ func WithFlowBus(bus *events.FlowBus) ManagerOption {
 	return func(m *Manager) { m.flowBus = bus }
 }
 
+// WithDataDir sets the root data directory for snapshot storage.
+func WithDataDir(dir string) ManagerOption {
+	return func(m *Manager) { m.dataDir = dir }
+}
+
 // NewManager creates a new collection manager.
 func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (*Manager, error) {
 	mgr := &Manager{
-		collections: make(map[string]*Collection),
-		sysdb:       sysdb,
-		wal:         wal,
+		collections:    make(map[string]*Collection),
+		sysdb:          sysdb,
+		wal:            wal,
+		snapshotSeqIDs: make(map[string]uint64),
 	}
 	for _, opt := range opts {
 		opt(mgr)
@@ -91,6 +100,37 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (
 				"error", err,
 			)
 			continue
+		}
+
+		// Try to load HNSW snapshot if available
+		if meta.IndexType == "hnsw" && mgr.dataDir != "" {
+			snapPath := mgr.snapshotPath(meta.ID)
+			if hnswIdx, ok := idx.(*hnsw.HNSWIndex); ok {
+				hnswIdx.SetSnapshotPath(snapPath)
+				if loaded, seqID, err := hnsw.LoadHNSWFromSnapshot(snapPath); err == nil {
+					if setErr := loaded.SetDistanceFunc(meta.Metric); setErr != nil {
+						slog.Warn("failed to set distance func on loaded snapshot, using empty index",
+							"collection", meta.Name,
+							"error", setErr,
+						)
+					} else {
+						loaded.SetSnapshotPath(snapPath)
+						idx = loaded
+						mgr.snapshotSeqIDs[meta.ID] = seqID
+						slog.Info("loaded HNSW snapshot",
+							"collection", meta.Name,
+							"nodes", loaded.Len(),
+							"seq_id", seqID,
+						)
+					}
+				} else {
+					slog.Debug("no HNSW snapshot found, will replay full WAL",
+						"collection", meta.Name,
+						"path", snapPath,
+						"error", err,
+					)
+				}
+			}
 		}
 
 		mgr.collections[meta.ID] = &Collection{
@@ -129,13 +169,17 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (
 	}
 
 	// Replay WAL to reconstruct in-memory index state after restart.
-	// This is the crash-recovery path: any inserts/deletes that were WAL-durable
-	// but not yet compacted are replayed into the index.
+	// If a snapshot was loaded, only replay entries AFTER the snapshot seqID.
 	if err := mgr.replayWAL(); err != nil {
 		return nil, fmt.Errorf("collection: WAL replay failed: %w", err)
 	}
 
 	return mgr, nil
+}
+
+// snapshotPath returns the file path for the HNSW snapshot of a collection.
+func (m *Manager) snapshotPath(collectionID string) string {
+	return filepath.Join(m.dataDir, "snapshots", collectionID+".hsnp")
 }
 
 // CreateCollection creates a new collection.
@@ -583,11 +627,24 @@ func (m *Manager) DeleteVector(ctx context.Context, collectionID string, vectorI
 }
 
 // Flush flushes all collections' indexes.
+// For HNSW collections, sets the current WAL seqID before snapshotting.
 func (m *Manager) Flush() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Get current max WAL seqID for snapshot coordination
+	var maxSeqID uint64
+	if m.dataDir != "" {
+		if entries, err := m.wal.ReadFrom(0); err == nil && len(entries) > 0 {
+			maxSeqID = entries[len(entries)-1].SeqID
+		}
+	}
+
 	for id, col := range m.collections {
+		// Set snapshot seqID for HNSW indexes
+		if hnswIdx, ok := col.idx.(*hnsw.HNSWIndex); ok {
+			hnswIdx.SetSnapshotSeqID(maxSeqID)
+		}
 		if err := col.idx.Flush(); err != nil {
 			slog.Error("flush failed", "collection", id, "error", err)
 		}
@@ -595,11 +652,25 @@ func (m *Manager) Flush() error {
 	return nil
 }
 
-// replayWAL replays all WAL entries into the in-memory indexes.
+// replayWAL replays WAL entries into the in-memory indexes.
 // Called once during startup to recover state after a crash or restart.
-// Entries are replayed in sequence order to preserve causal consistency.
+// For collections with a loaded HNSW snapshot, only entries AFTER the
+// snapshot's seqID are replayed. For all others, the full WAL is replayed.
 func (m *Manager) replayWAL() error {
-	entries, err := m.wal.ReadFrom(0)
+	// Find the minimum snapshot seqID across all collections.
+	// Collections with snapshots only need entries after their snapshot seqID.
+	// Collections without snapshots need all entries (from seq 0).
+	var afterSeq uint64 = 0 // default: replay everything
+
+	hasSnapshot := false
+	for _, seqID := range m.snapshotSeqIDs {
+		if !hasSnapshot || seqID < afterSeq {
+			afterSeq = seqID
+			hasSnapshot = true
+		}
+	}
+
+	entries, err := m.wal.ReadFrom(afterSeq)
 	if err != nil {
 		return fmt.Errorf("reading WAL entries: %w", err)
 	}
@@ -609,13 +680,23 @@ func (m *Manager) replayWAL() error {
 		return nil
 	}
 
-	slog.Info("WAL replay starting", "entries", len(entries))
+	slog.Info("WAL replay starting",
+		"entries", len(entries),
+		"after_seq", afterSeq,
+		"has_snapshot", hasSnapshot,
+	)
 
 	var replayed, skipped, errors int
 	for _, entry := range entries {
 		col, exists := m.collections[entry.Op.CollectionID]
 		if !exists {
 			// Collection was deleted after this WAL entry was written — skip
+			skipped++
+			continue
+		}
+
+		// If this collection has a snapshot, skip entries already covered by it
+		if snapSeq, ok := m.snapshotSeqIDs[entry.Op.CollectionID]; ok && entry.SeqID <= snapSeq {
 			skipped++
 			continue
 		}
@@ -691,6 +772,32 @@ func (m *Manager) GetVectorsMetadata(collectionID string, ids []uint64) (map[uin
 		}
 	}
 	return result, nil
+}
+
+// SnapshotCollection triggers an HNSW snapshot for a specific collection.
+// Called after compaction to create a new recovery checkpoint.
+func (m *Manager) SnapshotCollection(collectionID string) error {
+	m.mu.RLock()
+	col, exists := m.collections[collectionID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("collection %q not found", collectionID)
+	}
+
+	hnswIdx, ok := col.idx.(*hnsw.HNSWIndex)
+	if !ok {
+		return nil // not an HNSW index, nothing to snapshot
+	}
+
+	// Get current max WAL seqID
+	var maxSeqID uint64
+	if entries, err := m.wal.ReadFrom(0); err == nil && len(entries) > 0 {
+		maxSeqID = entries[len(entries)-1].SeqID
+	}
+	hnswIdx.SetSnapshotSeqID(maxSeqID)
+
+	return hnswIdx.Flush()
 }
 
 // createIndex creates an index of the specified type.

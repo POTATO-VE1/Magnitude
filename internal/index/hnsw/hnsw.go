@@ -16,7 +16,8 @@
 //   - efSearch: beam width during query (default: 50)
 //
 // The level assignment follows the exponential distribution:
-//   level = floor(-ln(uniform(0,1)) * mL), where mL = 1/ln(M).
+//
+//	level = floor(-ln(uniform(0,1)) * mL), where mL = 1/ln(M).
 package hnsw
 
 import (
@@ -25,6 +26,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/POTATO-VE1/Magnitude/internal/distance"
 	vdberrors "github.com/POTATO-VE1/Magnitude/internal/errors"
@@ -35,8 +37,8 @@ import (
 type node struct {
 	id      uint64
 	vector  []float32
-	level   int       // max layer this node exists on
-	friends [][]int   // friends[layer] = list of neighbor node indices
+	level   int     // max layer this node exists on
+	friends [][]int // friends[layer] = list of neighbor node indices
 }
 
 // HNSWIndex implements the Index interface using a multi-layer navigable small world graph.
@@ -45,17 +47,19 @@ type HNSWIndex struct {
 	dim            int
 	metric         string
 	distFn         distance.DistanceFunc
-	m              int     // max connections per layer
-	mMax0          int     // max connections on layer 0 (2*M)
-	efConstruction int     // beam width during construction
-	efSearch       int     // default beam width during search
-	mL             float64 // normalization factor: 1/ln(M)
-	maxLevel       int     // current max level in the graph
-	entryPoint     int     // index of the entry point node
-	nodes          []node  // all nodes (index = internal node ID)
+	m              int            // max connections per layer
+	mMax0          int            // max connections on layer 0 (2*M)
+	efConstruction int            // beam width during construction
+	efSearch       int            // default beam width during search
+	mL             float64        // normalization factor: 1/ln(M)
+	maxLevel       int            // current max level in the graph
+	entryPoint     int            // index of the entry point node
+	nodes          []node         // all nodes (index = internal node ID)
 	idToNode       map[uint64]int // external ID → internal node index
 	rng            *rand.Rand
 	deleted        map[uint64]bool // soft-delete tombstones
+	snapshotPath   string          // file path for snapshot persistence
+	snapshotSeqID  uint64          // WAL seqID at last snapshot time
 }
 
 // NewHNSWIndex creates a new HNSW index.
@@ -129,6 +133,11 @@ func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	return h.insertLocked(id, vector)
+}
+
+// insertLocked performs the actual insert. Must be called with h.mu held.
+func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if _, exists := h.idToNode[id]; exists {
 		return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 	}
@@ -315,15 +324,11 @@ func (h *HNSWIndex) Rebuild() error {
 	h.deleted = make(map[uint64]bool)
 	h.maxLevel = -1
 	h.entryPoint = -1
-	h.rng = rand.New(rand.NewSource(42))
+	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 
-	// Re-insert all live nodes
+	// Re-insert all live nodes (lock already held)
 	for _, ln := range liveNodes {
-		// Bypass lock since we already hold it
-		h.mu.Unlock()
-		err := h.Insert(ln.id, ln.vec)
-		h.mu.Lock()
-		if err != nil {
+		if err := h.insertLocked(ln.id, ln.vec); err != nil {
 			return err
 		}
 	}
@@ -331,8 +336,34 @@ func (h *HNSWIndex) Rebuild() error {
 	return nil
 }
 
-// Flush is a no-op for in-memory HNSWIndex.
+// Flush persists the in-memory HNSW graph to disk via snapshot.
+// SnapshotPath and SnapshotSeqID must be set before calling Flush.
 func (h *HNSWIndex) Flush() error {
+	if h.snapshotPath == "" {
+		return nil
+	}
+	return h.SnapshotToFile(h.snapshotPath, h.snapshotSeqID)
+}
+
+// SetSnapshotPath configures the file path used by Flush for snapshot persistence.
+func (h *HNSWIndex) SetSnapshotPath(path string) {
+	h.snapshotPath = path
+}
+
+// SetSnapshotSeqID records the WAL sequence ID at snapshot time.
+func (h *HNSWIndex) SetSnapshotSeqID(seqID uint64) {
+	h.snapshotSeqID = seqID
+}
+
+// SetDistanceFunc configures the distance function for a loaded snapshot.
+// Required after loading from snapshot since the distance function is not serialized.
+func (h *HNSWIndex) SetDistanceFunc(metric string) error {
+	distFn, err := distance.GetDistanceFunc(metric)
+	if err != nil {
+		return err
+	}
+	h.metric = metric
+	h.distFn = distFn
 	return nil
 }
 
@@ -487,10 +518,10 @@ func (h *HNSWIndex) pruneConnections(nodeVec []float32, friends []int, maxConn i
 // minCandHeap is a min-heap for candidate exploration (closest first).
 type minCandHeap []candidate
 
-func (h minCandHeap) Len() int            { return len(h) }
-func (h minCandHeap) Less(i, j int) bool  { return h[i].dist < h[j].dist }
-func (h minCandHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *minCandHeap) Push(x any)         { *h = append(*h, x.(candidate)) }
+func (h minCandHeap) Len() int           { return len(h) }
+func (h minCandHeap) Less(i, j int) bool { return h[i].dist < h[j].dist }
+func (h minCandHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *minCandHeap) Push(x any)        { *h = append(*h, x.(candidate)) }
 func (h *minCandHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -502,10 +533,10 @@ func (h *minCandHeap) Pop() any {
 // maxCandHeap is a max-heap for result tracking (worst distance at root).
 type maxCandHeap []candidate
 
-func (h maxCandHeap) Len() int            { return len(h) }
-func (h maxCandHeap) Less(i, j int) bool  { return h[i].dist > h[j].dist }
-func (h maxCandHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *maxCandHeap) Push(x any)         { *h = append(*h, x.(candidate)) }
+func (h maxCandHeap) Len() int           { return len(h) }
+func (h maxCandHeap) Less(i, j int) bool { return h[i].dist > h[j].dist }
+func (h maxCandHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *maxCandHeap) Push(x any)        { *h = append(*h, x.(candidate)) }
 func (h *maxCandHeap) Pop() any {
 	old := *h
 	n := len(old)

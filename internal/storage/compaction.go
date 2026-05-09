@@ -31,12 +31,13 @@ import (
 //
 // After compaction, the corresponding WAL entries are truncated.
 type Compactor struct {
-	mu       sync.Mutex
-	dataDir  string
-	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
-	flowBus  *events.FlowBus // optional
+	mu        sync.Mutex
+	dataDir   string
+	interval  time.Duration
+	cancel    context.CancelFunc
+	done      chan struct{}
+	flowBus   *events.FlowBus           // optional
+	onCompact func(collectionID string) // called after successful compaction per collection
 }
 
 // CompactorOption configures the Compactor.
@@ -47,11 +48,18 @@ func WithCompactorFlowBus(bus *events.FlowBus) CompactorOption {
 	return func(c *Compactor) { c.flowBus = bus }
 }
 
+// WithCompactionCallback sets a function called after successful compaction
+// for each affected collection. Used to trigger HNSW snapshots.
+func WithCompactionCallback(fn func(collectionID string)) CompactorOption {
+	return func(c *Compactor) { c.onCompact = fn }
+}
+
 // NewCompactor creates a new compaction worker.
 func NewCompactor(dataDir string, interval time.Duration, opts ...CompactorOption) *Compactor {
 	c := &Compactor{
 		dataDir:  dataDir,
 		interval: interval,
+		done:     make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(c)

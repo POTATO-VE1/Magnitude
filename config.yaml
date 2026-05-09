@@ -28,12 +28,12 @@ server:
   maxHeaderBytes: 16384
 
 auth:
-  # SHA-256 hashes (hex-encoded) of valid API keys.
-  # Raw keys are NEVER stored. To add a key:
+  # WARNING: An empty keyHashes list DISABLES authentication entirely.
+  # The server will accept ALL requests without verifying API keys.
+  # This is suitable for local development ONLY.
+  # Before exposing to any network, generate at least one key hash:
   #   echo -n "my-secret-api-key" | sha256sum
-  # Example (DO NOT use this hash in production):
-  # keyHashes:
-  #   - "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"
+  # Then add the hex output below.
   keyHashes: []
 
 rateLimit:

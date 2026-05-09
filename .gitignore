@@ -3,6 +3,14 @@ data/
 
 # ── SSL certificates (security-sensitive, never commit) ──
 certs/
+*.pem
+*.key
+*.crt
+
+# ── Environment secrets ──
+*.env
+*.env.*
+!.env.example
 
 # ── Python virtual environment ──
 python-client/venv/
@@ -21,4 +29,10 @@ Thumbs.db
 # ── IDE / tool folders ──
 .vscode/
 .idea/
+
+# ── Logs and temp files ──
+*.log
+*.tmp
+*.swp
+*.bak
 

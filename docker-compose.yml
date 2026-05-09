@@ -1,21 +1,21 @@
-version: '3.8'
-
 services:
-  magnitude:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  vectordb:
+    build: .
+    container_name: magnitude-vectordb
     ports:
-      - "8443:8443"
+      - "8443:8443"                  # HTTPS API
+      - "127.0.0.1:9090:9090"       # Metrics + pprof (localhost only)
     volumes:
-      - magnitude_data:/app/data
-      - ./config.yaml:/app/config.yaml:ro
+      - vectordb-data:/app/data
+      - ./certs:/app/certs:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://localhost:8443/api/v2/tenants"]
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
+      start_period: 10s
 
 volumes:
-  magnitude_data:
+  vectordb-data:
+    driver: local

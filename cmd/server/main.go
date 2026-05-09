@@ -131,7 +131,10 @@ func main() {
 	flowBus := events.NewFlowBus()
 
 	// ── 8. Initialize Collection Manager (includes WAL replay) ───────────────
-	mgr, err := collection.NewManager(sysdb, wal, collection.WithFlowBus(flowBus))
+	mgr, err := collection.NewManager(sysdb, wal,
+		collection.WithFlowBus(flowBus),
+		collection.WithDataDir(cfg.Storage.DataDir),
+	)
 	if err != nil {
 		slog.Error("failed to initialize collection manager", "error", err)
 		os.Exit(1)

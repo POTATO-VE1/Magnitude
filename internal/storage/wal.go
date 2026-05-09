@@ -89,7 +89,7 @@ func WithSyncDelay(d time.Duration) WALOption {
 //   - fsync guarantees durability
 //   - Atomic transactions
 type SQLiteWAL struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	db          *sql.DB
 	path        string
 	syncMode    string
@@ -287,8 +287,8 @@ func (w *SQLiteWAL) AppendBatch(ops []WALOp) ([]uint64, error) {
 
 // ReadFrom returns all WAL entries with seqID > afterSeq.
 func (w *SQLiteWAL) ReadFrom(afterSeq uint64) ([]WALEntry, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 
 	rows, err := w.db.Query(
 		"SELECT seq_id, op_type, collection_id, vector_id, vector_data, document FROM wal_entries WHERE seq_id > ? ORDER BY seq_id",

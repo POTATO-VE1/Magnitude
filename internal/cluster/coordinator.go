@@ -170,6 +170,11 @@ func (c *Coordinator) Heartbeat(nodeID string) error {
 		return fmt.Errorf("cluster: node %q not found", nodeID)
 	}
 
+	// Re-add to ring if node was previously dead and removed
+	if node.State == NodeDead {
+		c.ring.AddNode(nodeID)
+	}
+
 	node.LastHeartbeat = time.Now()
 	node.State = NodeAlive
 	return nil
