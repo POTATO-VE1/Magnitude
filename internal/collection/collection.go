@@ -8,7 +8,8 @@
 //   - A Compactor for async index materialization
 //
 // ChromaDB Architecture mapping:
-//   collection.Collection ≈ ChromaDB's Segment Manager + local HNSW segment.
+//
+//	collection.Collection ≈ ChromaDB's Segment Manager + local HNSW segment.
 //
 // The Collection is the unit of concurrency: multiple goroutines may read
 // concurrently; writes are serialized via a per-collection RWMutex.
@@ -20,6 +21,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/veda/vectordb/internal/events"
 	"github.com/veda/vectordb/internal/index"
 	"github.com/veda/vectordb/internal/index/flat"
 	"github.com/veda/vectordb/internal/index/hnsw"
@@ -33,8 +35,8 @@ import (
 
 // Collection wraps an Index with WAL and metadata management.
 type Collection struct {
-	mu         sync.RWMutex
-	meta       *metadata.Collection
+	mu            sync.RWMutex
+	meta          *metadata.Collection
 	idx           index.Index
 	invertedIndex *sparse.InvertedIndex
 	wal           storage.WAL
@@ -48,6 +50,7 @@ type Manager struct {
 	collections map[string]*Collection // collection ID → Collection
 	sysdb       *metadata.SysDB
 	wal         storage.WAL
+	flowBus     *events.FlowBus // optional — nil disables event notifications
 }
 
 // SysDB returns the underlying system database for direct access by API handlers.
@@ -55,12 +58,23 @@ func (m *Manager) SysDB() *metadata.SysDB {
 	return m.sysdb
 }
 
+// ManagerOption configures the Manager.
+type ManagerOption func(*Manager)
+
+// WithFlowBus sets the event bus for the Manager.
+func WithFlowBus(bus *events.FlowBus) ManagerOption {
+	return func(m *Manager) { m.flowBus = bus }
+}
+
 // NewManager creates a new collection manager.
-func NewManager(sysdb *metadata.SysDB, wal storage.WAL) (*Manager, error) {
+func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (*Manager, error) {
 	mgr := &Manager{
 		collections: make(map[string]*Collection),
 		sysdb:       sysdb,
 		wal:         wal,
+	}
+	for _, opt := range opts {
+		opt(mgr)
 	}
 
 	// Load existing collections from SysDB
@@ -86,6 +100,23 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL) (*Manager, error) {
 			wal:           wal,
 			sysdb:         sysdb,
 			vectorMeta:    make(map[uint64]metadata.VectorMetadata),
+		}
+
+		// Load persisted vector metadata from SQLite
+		persistedMeta, err := sysdb.LoadAllVectorMetadata(meta.ID)
+		if err != nil {
+			slog.Warn("failed to load vector metadata",
+				"collection", meta.Name,
+				"error", err,
+			)
+		} else if len(persistedMeta) > 0 {
+			for id, m := range persistedMeta {
+				mgr.collections[meta.ID].vectorMeta[id] = metadata.VectorMetadata(m)
+			}
+			slog.Info("loaded vector metadata",
+				"collection", meta.Name,
+				"vectors_with_metadata", len(persistedMeta),
+			)
 		}
 
 		slog.Info("restored collection",
@@ -141,6 +172,10 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 		"metric", metric,
 		"index_type", indexType,
 	)
+
+	if m.flowBus != nil {
+		m.flowBus.Notify(events.EventCollectionCreated)
+	}
 
 	return meta, nil
 }
@@ -334,6 +369,13 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 		// Store metadata if provided
 		if meta != nil && i < len(meta) && meta[i] != nil {
 			col.vectorMeta[id] = metadata.VectorMetadata(meta[i])
+			// Persist to SQLite for durability across restarts
+			if err := col.sysdb.SaveVectorMetadata(collectionID, id, meta[i]); err != nil {
+				slog.Warn("failed to persist vector metadata",
+					"vector_id", id,
+					"error", err,
+				)
+			}
 		}
 
 		if doc != "" {
@@ -344,6 +386,10 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 	// Update metadata
 	col.meta.VectorCount = col.idx.Len()
 	m.sysdb.UpdateVectorCount(collectionID, col.idx.Len())
+
+	if m.flowBus != nil {
+		m.flowBus.Notify(events.EventVectorInserted)
+	}
 
 	return nil
 }
@@ -524,6 +570,9 @@ func (m *Manager) DeleteVector(ctx context.Context, collectionID string, vectorI
 	}
 	col.invertedIndex.RemoveDocument(vectorID)
 
+	// Remove persisted metadata
+	col.sysdb.DeleteVectorMetadata(collectionID, vectorID)
+
 	// Tombstone in metadata
 	m.sysdb.AddTombstone(collectionID, vectorID)
 
@@ -615,8 +664,13 @@ func (m *Manager) replayWAL() error {
 		"errors", errors,
 	)
 
+	if m.flowBus != nil {
+		m.flowBus.Notify(events.EventWALReplayComplete)
+	}
+
 	return nil
 }
+
 // GetVectorsMetadata returns the metadata for a list of vector IDs in a collection.
 func (m *Manager) GetVectorsMetadata(collectionID string, ids []uint64) (map[uint64]map[string]any, error) {
 	m.mu.RLock()

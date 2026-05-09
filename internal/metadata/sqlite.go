@@ -176,6 +176,17 @@ func NewSysDB(path string) (*SysDB, error) {
 			created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
 			expires_at      INTEGER
 		);
+
+		CREATE TABLE IF NOT EXISTS vector_metadata (
+			collection_id TEXT    NOT NULL,
+			vector_id     INTEGER NOT NULL,
+			meta_key      TEXT    NOT NULL,
+			meta_value    TEXT    NOT NULL,
+			PRIMARY KEY (collection_id, vector_id, meta_key),
+			FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_vector_metadata_lookup ON vector_metadata(collection_id, vector_id);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -425,6 +436,72 @@ func (s *SysDB) loadTombstones() error {
 // Close closes the underlying SQLite database.
 func (s *SysDB) Close() error {
 	return s.db.Close()
+}
+
+// SaveVectorMetadata persists per-vector metadata to SQLite.
+// Called during vector insertion to make metadata durable across restarts.
+func (s *SysDB) SaveVectorMetadata(collectionID string, vectorID uint64, meta map[string]any) error {
+	if len(meta) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for k, v := range meta {
+		valStr := fmt.Sprintf("%v", v)
+		_, err := s.db.Exec(
+			`INSERT OR REPLACE INTO vector_metadata (collection_id, vector_id, meta_key, meta_value)
+			 VALUES (?, ?, ?, ?)`,
+			collectionID, vectorID, k, valStr,
+		)
+		if err != nil {
+			return fmt.Errorf("metadata: saving vector metadata: %w", err)
+		}
+	}
+	return nil
+}
+
+// LoadAllVectorMetadata loads all metadata for all vectors in a collection.
+// Called during startup to repopulate the in-memory vectorMeta map.
+func (s *SysDB) LoadAllVectorMetadata(collectionID string) (map[uint64]map[string]any, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		"SELECT vector_id, meta_key, meta_value FROM vector_metadata WHERE collection_id = ?",
+		collectionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("metadata: loading vector metadata: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uint64]map[string]any)
+	for rows.Next() {
+		var vecID uint64
+		var key, value string
+		if err := rows.Scan(&vecID, &key, &value); err != nil {
+			return nil, fmt.Errorf("metadata: scanning vector metadata: %w", err)
+		}
+		if result[vecID] == nil {
+			result[vecID] = make(map[string]any)
+		}
+		result[vecID][key] = value
+	}
+	return result, rows.Err()
+}
+
+// DeleteVectorMetadata removes all metadata for a specific vector.
+func (s *SysDB) DeleteVectorMetadata(collectionID string, vectorID uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(
+		"DELETE FROM vector_metadata WHERE collection_id = ? AND vector_id = ?",
+		collectionID, vectorID,
+	)
+	return err
 }
 
 // EnsureDefaults seeds the default tenant and database on first startup.

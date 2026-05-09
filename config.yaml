@@ -94,3 +94,89 @@ gc:
   # 100 = default (GC when heap grows 100% above live set).
   # Increase to 200 for workloads with large stable mmap memory.
   percent: 100
+
+bloomFilter:
+  # Enable bloom filters on compacted segment files for fast negative lookups.
+  # When enabled, a .bloom sidecar file is created alongside each segment.
+  # Before reading a segment, the bloom filter is checked — if the ID is
+  # definitely not present, the disk read is skipped entirely.
+  enabled: true
+
+  # Target false positive rate (0-1). Lower = larger bloom file, fewer wasted reads.
+  # 0.01 (1%) is the sweet spot for most workloads.
+  falsePositiveRate: 0.01
+
+  # Minimum vector count before a bloom filter is created.
+  # Below this threshold, the overhead of the bloom file isn't justified.
+  minVectors: 1024
+
+walSync:
+  # Controls when WAL writes are fsynced to disk.
+  # - "per-write": fsync after every write (safest, default)
+  # - "delayed":   batch fsyncs on a configurable delay (faster, small data loss window)
+  # - "none":      never fsync (fastest, risk data loss on crash — benchmarking only)
+  syncMode: "per-write"
+
+  # Delay before a batched WAL checkpoint in "delayed" mode.
+  # Only effective when syncMode is "delayed".
+  # Recommended: 1-10ms. Higher = better throughput, larger data loss window.
+  syncDelay: "0s"
+
+cluster:
+  # Enable distributed mode. When false, runs as a single-node server.
+  enabled: false
+
+  # This node's unique identifier in the cluster.
+  nodeID: "node-1"
+
+  # Number of replicas for each collection.
+  replicationFactor: 3
+
+  # Virtual nodes per physical node in the consistent hash ring.
+  # Higher = better load distribution. 150 is a good default.
+  virtualNodes: 150
+
+  # Default consistency level for search operations: "one", "quorum", "all"
+  defaultReadConsistency: "one"
+
+  # Default consistency level for insert operations: "one", "quorum", "all"
+  defaultWriteConsistency: "one"
+
+gossip:
+  # UDP port for gossip protocol messages. Default: 7946
+  port: 7946
+
+  # Number of random peers to gossip to per round. Default: 3
+  fanout: 3
+
+  # Maximum number of events to track for deduplication. Default: 5000
+  maxSeen: 5000
+
+  # TTL for seen events (prevents re-processing). Default: "30s"
+  seenExpiry: "30s"
+
+  # How often to gossip membership changes. Default: "1s"
+  probeInterval: "1s"
+
+failureDetection:
+  # How often to check node health. Default: "1s"
+  interval: "1s"
+
+  # Probe timeout for individual nodes. Default: "500ms"
+  timeout: "500ms"
+
+  # How long since last heartbeat before marking suspect. Default: "5s"
+  suspectAfter: "5s"
+
+  # How long since last heartbeat before marking dead. Default: "15s"
+  deadAfter: "15s"
+
+migration:
+  # Number of vectors per migration batch. Default: 1000
+  batchSize: 1000
+
+  # Number of concurrent migration workers. Default: 4
+  parallelism: 4
+
+  # Retry count per batch on failure. Default: 3
+  maxRetries: 3

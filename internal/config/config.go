@@ -15,12 +15,18 @@ import (
 // It mirrors config.yaml exactly. All nested structs use yaml tags for
 // YAML parsing and json tags for future JSON config support.
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	RateLimit RateLimitConfig `yaml:"rateLimit"`
-	Storage   StorageConfig   `yaml:"storage"`
-	Index     IndexConfig     `yaml:"index"`
-	GC        GCConfig        `yaml:"gc"`
+	Server      ServerConfig      `yaml:"server"`
+	Auth        AuthConfig        `yaml:"auth"`
+	RateLimit   RateLimitConfig   `yaml:"rateLimit"`
+	Storage     StorageConfig     `yaml:"storage"`
+	Index       IndexConfig       `yaml:"index"`
+	GC          GCConfig          `yaml:"gc"`
+	BloomFilter BloomFilterConfig `yaml:"bloomFilter"`
+	WALSync     WALSyncConfig     `yaml:"walSync"`
+	Cluster     ClusterConfig     `yaml:"cluster"`
+	Gossip      GossipConfig      `yaml:"gossip"`
+	Failure     FailureConfig     `yaml:"failureDetection"`
+	Migration   MigrationConfig   `yaml:"migration"`
 }
 
 // ServerConfig holds all HTTP server tunables.
@@ -125,6 +131,96 @@ type GCConfig struct {
 	Percent int `yaml:"percent"`
 }
 
+// BloomFilterConfig holds bloom filter tuning for segment-level fast negative lookups.
+type BloomFilterConfig struct {
+	// Enabled controls whether bloom filters are created during compaction. Default: true
+	Enabled bool `yaml:"enabled"`
+
+	// FalsePositiveRate is the target false positive rate (0-1). Default: 0.01 (1%)
+	FalsePositiveRate float64 `yaml:"falsePositiveRate"`
+
+	// MinVectors is the minimum vector count before a bloom filter is created.
+	// Below this threshold, the overhead isn't justified. Default: 1024
+	MinVectors int `yaml:"minVectors"`
+}
+
+// WALSyncConfig controls WAL sync behavior for write throughput tuning.
+type WALSyncConfig struct {
+	// SyncMode controls when WAL writes are fsynced: "per-write", "delayed", or "none".
+	// Default: "per-write" (safest, preserves current behavior).
+	SyncMode string `yaml:"syncMode"`
+
+	// SyncDelay is the delay before a batched checkpoint in "delayed" mode.
+	// Only effective when syncMode is "delayed". Default: "0s" (immediate).
+	SyncDelay time.Duration `yaml:"syncDelay"`
+}
+
+// ClusterConfig controls distributed cluster behavior.
+type ClusterConfig struct {
+	// Enabled activates distributed mode. Default: false (single-node).
+	Enabled bool `yaml:"enabled"`
+
+	// NodeID is this node's unique identifier in the cluster. Default: "node-1"
+	NodeID string `yaml:"nodeID"`
+
+	// ReplicationFactor is the number of copies for each collection. Default: 3
+	ReplicationFactor int `yaml:"replicationFactor"`
+
+	// VirtualNodes is the number of virtual nodes per physical node in the hash ring. Default: 150
+	VirtualNodes int `yaml:"virtualNodes"`
+
+	// DefaultReadConsistency is the default consistency for search operations. Default: "one"
+	DefaultReadConsistency string `yaml:"defaultReadConsistency"`
+
+	// DefaultWriteConsistency is the default consistency for insert operations. Default: "one"
+	DefaultWriteConsistency string `yaml:"defaultWriteConsistency"`
+}
+
+// GossipConfig controls the gossip protocol for cluster membership.
+type GossipConfig struct {
+	// Port is the UDP port for gossip messages. Default: 7946
+	Port int `yaml:"port"`
+
+	// Fanout is the number of random peers to gossip to per round. Default: 3
+	Fanout int `yaml:"fanout"`
+
+	// MaxSeen is the maximum number of events to track for dedup. Default: 5000
+	MaxSeen int `yaml:"maxSeen"`
+
+	// SeenExpiry is the TTL for seen events. Default: "30s"
+	SeenExpiry time.Duration `yaml:"seenExpiry"`
+
+	// ProbeInterval is how often to gossip. Default: "1s"
+	ProbeInterval time.Duration `yaml:"probeInterval"`
+}
+
+// FailureConfig controls failure detection for cluster nodes.
+type FailureConfig struct {
+	// Interval is how often to check node health. Default: "1s"
+	Interval time.Duration `yaml:"interval"`
+
+	// Timeout is the probe timeout. Default: "500ms"
+	Timeout time.Duration `yaml:"timeout"`
+
+	// SuspectAfter is how long before marking suspect. Default: "5s"
+	SuspectAfter time.Duration `yaml:"suspectAfter"`
+
+	// DeadAfter is how long before marking dead. Default: "15s"
+	DeadAfter time.Duration `yaml:"deadAfter"`
+}
+
+// MigrationConfig controls data migration between cluster nodes.
+type MigrationConfig struct {
+	// BatchSize is vectors per migration batch. Default: 1000
+	BatchSize int `yaml:"batchSize"`
+
+	// Parallelism is concurrent migration workers. Default: 4
+	Parallelism int `yaml:"parallelism"`
+
+	// MaxRetries is retry count per batch. Default: 3
+	MaxRetries int `yaml:"maxRetries"`
+}
+
 // DefaultConfig returns a Config populated with all spec-defined defaults.
 // Used as the base before overlaying values from config.yaml.
 func DefaultConfig() *Config {
@@ -164,6 +260,41 @@ func DefaultConfig() *Config {
 		},
 		GC: GCConfig{
 			Percent: 100,
+		},
+		BloomFilter: BloomFilterConfig{
+			Enabled:           true,
+			FalsePositiveRate: 0.01,
+			MinVectors:        1024,
+		},
+		WALSync: WALSyncConfig{
+			SyncMode:  "per-write",
+			SyncDelay: 0,
+		},
+		Cluster: ClusterConfig{
+			Enabled:                 false,
+			NodeID:                  "node-1",
+			ReplicationFactor:       3,
+			VirtualNodes:            150,
+			DefaultReadConsistency:  "one",
+			DefaultWriteConsistency: "one",
+		},
+		Gossip: GossipConfig{
+			Port:          7946,
+			Fanout:        3,
+			MaxSeen:       5000,
+			SeenExpiry:    30 * time.Second,
+			ProbeInterval: 1 * time.Second,
+		},
+		Failure: FailureConfig{
+			Interval:     1 * time.Second,
+			Timeout:      500 * time.Millisecond,
+			SuspectAfter: 5 * time.Second,
+			DeadAfter:    15 * time.Second,
+		},
+		Migration: MigrationConfig{
+			BatchSize:   1000,
+			Parallelism: 4,
+			MaxRetries:  3,
 		},
 	}
 }
@@ -214,6 +345,32 @@ func (c *Config) Validate() error {
 	validIndexTypes := map[string]bool{"flat": true, "ivf": true, "hnsw": true, "spann": true}
 	if !validIndexTypes[c.Index.Type] {
 		return fmt.Errorf("index.type must be one of [flat, ivf, hnsw, spann], got %q", c.Index.Type)
+	}
+	if c.BloomFilter.FalsePositiveRate <= 0 || c.BloomFilter.FalsePositiveRate >= 1.0 {
+		return fmt.Errorf("bloomFilter.falsePositiveRate must be in (0, 1), got %f", c.BloomFilter.FalsePositiveRate)
+	}
+	if c.BloomFilter.MinVectors < 0 {
+		return fmt.Errorf("bloomFilter.minVectors must be >= 0, got %d", c.BloomFilter.MinVectors)
+	}
+	validSyncModes := map[string]bool{"per-write": true, "delayed": true, "none": true}
+	if !validSyncModes[c.WALSync.SyncMode] {
+		return fmt.Errorf("walSync.syncMode must be one of [per-write, delayed, none], got %q", c.WALSync.SyncMode)
+	}
+	validConsistency := map[string]bool{"one": true, "quorum": true, "all": true}
+	if c.Cluster.DefaultReadConsistency != "" && !validConsistency[c.Cluster.DefaultReadConsistency] {
+		return fmt.Errorf("cluster.defaultReadConsistency must be one of [one, quorum, all], got %q", c.Cluster.DefaultReadConsistency)
+	}
+	if c.Cluster.DefaultWriteConsistency != "" && !validConsistency[c.Cluster.DefaultWriteConsistency] {
+		return fmt.Errorf("cluster.defaultWriteConsistency must be one of [one, quorum, all], got %q", c.Cluster.DefaultWriteConsistency)
+	}
+	if c.Gossip.Port < 0 {
+		return fmt.Errorf("gossip.port must be >= 0, got %d", c.Gossip.Port)
+	}
+	if c.Gossip.Fanout < 0 {
+		return fmt.Errorf("gossip.fanout must be >= 0, got %d", c.Gossip.Fanout)
+	}
+	if c.Migration.BatchSize < 0 {
+		return fmt.Errorf("migration.batchSize must be >= 0, got %d", c.Migration.BatchSize)
 	}
 	return nil
 }

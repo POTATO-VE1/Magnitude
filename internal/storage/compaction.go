@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/veda/vectordb/internal/events"
 )
 
 // Compactor materializes vectors from an in-memory index to disk.
@@ -34,14 +36,27 @@ type Compactor struct {
 	interval time.Duration
 	cancel   context.CancelFunc
 	done     chan struct{}
+	flowBus  *events.FlowBus // optional
+}
+
+// CompactorOption configures the Compactor.
+type CompactorOption func(*Compactor)
+
+// WithCompactorFlowBus sets the event bus for the Compactor.
+func WithCompactorFlowBus(bus *events.FlowBus) CompactorOption {
+	return func(c *Compactor) { c.flowBus = bus }
 }
 
 // NewCompactor creates a new compaction worker.
-func NewCompactor(dataDir string, interval time.Duration) *Compactor {
-	return &Compactor{
+func NewCompactor(dataDir string, interval time.Duration, opts ...CompactorOption) *Compactor {
+	c := &Compactor{
 		dataDir:  dataDir,
 		interval: interval,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Start begins the background compaction loop.
@@ -62,6 +77,8 @@ func (c *Compactor) Start(compactFn func() error) {
 			case <-ticker.C:
 				if err := compactFn(); err != nil {
 					slog.Error("compaction failed", "error", err)
+				} else if c.flowBus != nil {
+					c.flowBus.Notify(events.EventCompactionComplete)
 				}
 			}
 		}

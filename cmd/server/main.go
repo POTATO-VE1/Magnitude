@@ -29,6 +29,7 @@ import (
 	"github.com/veda/vectordb/internal/api"
 	"github.com/veda/vectordb/internal/collection"
 	"github.com/veda/vectordb/internal/config"
+	"github.com/veda/vectordb/internal/events"
 	"github.com/veda/vectordb/internal/metadata"
 	"github.com/veda/vectordb/internal/storage"
 )
@@ -107,14 +108,30 @@ func main() {
 
 	// ── 7. Initialize WAL ────────────────────────────────────────────────────
 	walPath := filepath.Join(cfg.Storage.DataDir, "wal.sqlite")
-	wal, err := storage.NewSQLiteWAL(walPath)
+	var walOpts []storage.WALOption
+	if cfg.WALSync.SyncMode != "" {
+		walOpts = append(walOpts, storage.WithSyncMode(cfg.WALSync.SyncMode))
+	}
+	if cfg.WALSync.SyncDelay > 0 {
+		walOpts = append(walOpts, storage.WithSyncDelay(cfg.WALSync.SyncDelay))
+	}
+	wal, err := storage.NewSQLiteWAL(walPath, walOpts...)
 	if err != nil {
 		slog.Error("failed to initialize WAL", "error", err)
 		os.Exit(1)
 	}
 
+	// ── 7b. Recover incomplete compaction actions (crash recovery) ────────────
+	if err := storage.RecoverCompactionActions(cfg.Storage.DataDir); err != nil {
+		slog.Error("compaction action recovery failed", "error", err)
+		os.Exit(1)
+	}
+
+	// ── 7.5. Initialize FlowBus ──────────────────────────────────────────────
+	flowBus := events.NewFlowBus()
+
 	// ── 8. Initialize Collection Manager (includes WAL replay) ───────────────
-	mgr, err := collection.NewManager(sysdb, wal)
+	mgr, err := collection.NewManager(sysdb, wal, collection.WithFlowBus(flowBus))
 	if err != nil {
 		slog.Error("failed to initialize collection manager", "error", err)
 		os.Exit(1)

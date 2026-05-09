@@ -36,6 +36,14 @@ Most vector database options force a tradeoff you shouldn't have to make:
 -   **Interactive UI:** Search results are rendered instantly in a clean, local HTML/CSS lightbox UI.
 -   **Observability:** Built-in Prometheus metrics, pprof profiling, and structured JSON logging via `log/slog`.
 -   **Production-Ready:** TLS support, API key authentication, rate limiting, graceful shutdown, and config hot-reload via SIGHUP.
+-   **Bloom Filters:** Segment-level bloom filters for fast negative lookups, skipping unnecessary disk reads during search.
+-   **Crash-Safe Compaction:** Atomic multi-file compaction with action file recovery — no orphaned temp files after crashes.
+-   **Priority Task Scheduler:** Background operations (compaction, GC) yield CPU to foreground request handlers.
+-   **Tunable Consistency:** Per-operation consistency levels (One, Quorum, All) for distributed read/write operations.
+-   **Client-Side Routing:** Cluster-aware Go client with hash ring routing and auto-resync on topology changes.
+-   **Gossip Protocol:** UDP-based cluster membership dissemination with deduplication and idempotent event handling.
+-   **Failure Detection:** Heartbeat-based node health monitoring with Alive→Suspect→Dead state machine.
+-   **Data Migration:** Batch vector transfer between nodes with retry logic and progress tracking.
 
 ## Performance
 
@@ -143,6 +151,9 @@ Type a query (e.g., "a dog playing" or "a cute cat") and your browser will autom
 -   **Backend:** Go, SQLite (SysDB/WAL via `modernc.org/sqlite`), Chi Router, Prometheus, pprof
 -   **Indexing:** Flat, IVF, HNSW, SPANN — pluggable via config
 -   **Distance:** L2, Cosine — with optional SIMD acceleration
+-   **Storage:** WAL (SQLite with binary encoding), mmap segments, bloom filters, crash-safe compaction
+-   **Distribution:** Gossip protocol, failure detection, tunable consistency, data migration
+-   **Scheduling:** Priority-aware task scheduler for background operations
 -   **Frontend/Client:** Python 3, Requests, Rich (CLI styling), Sentence-Transformers (CLIP)
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for a detailed system diagram and component breakdown.

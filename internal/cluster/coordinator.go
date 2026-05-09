@@ -6,9 +6,10 @@
 //   - Replication factor (how many copies of each collection exist)
 //
 // Architecture (ChromaDB Cloud mapping):
-//   Coordinator ≈ ChromaDB's "chroma-coordinator" service
-//   It uses a consistent hash ring for shard assignment, with automatic
-//   rebalancing when nodes join or leave the cluster.
+//
+//	Coordinator ≈ ChromaDB's "chroma-coordinator" service
+//	It uses a consistent hash ring for shard assignment, with automatic
+//	rebalancing when nodes join or leave the cluster.
 //
 // In single-node mode (Phase 1-9), the coordinator is unused.
 // In distributed mode (Phase 10+), it coordinates the cluster.
@@ -48,23 +49,23 @@ func (s NodeState) String() string {
 // NodeInfo holds metadata about a cluster node.
 type NodeInfo struct {
 	ID            string    `json:"id"`
-	Address       string    `json:"address"`        // host:port for inter-node RPC
-	APIAddress    string    `json:"api_address"`     // host:port for client API
+	Address       string    `json:"address"`     // host:port for inter-node RPC
+	APIAddress    string    `json:"api_address"` // host:port for client API
 	State         NodeState `json:"state"`
 	LastHeartbeat time.Time `json:"last_heartbeat"`
 	JoinedAt      time.Time `json:"joined_at"`
-	Collections   int       `json:"collections"`     // number of collections owned
+	Collections   int       `json:"collections"` // number of collections owned
 }
 
 // Coordinator manages cluster membership and collection-to-node mapping.
 type Coordinator struct {
-	mu              sync.RWMutex
-	nodeID          string              // this node's ID
-	nodes           map[string]*NodeInfo // all known nodes
-	ring            *HashRing           // consistent hash ring
+	mu                sync.RWMutex
+	nodeID            string               // this node's ID
+	nodes             map[string]*NodeInfo // all known nodes
+	ring              *HashRing            // consistent hash ring
 	replicationFactor int
-	heartbeatTimeout  time.Duration     // duration before marking a node suspect
-	deadTimeout       time.Duration     // duration before marking a node dead
+	heartbeatTimeout  time.Duration // duration before marking a node suspect
+	deadTimeout       time.Duration // duration before marking a node dead
 }
 
 // CoordinatorConfig configures the cluster coordinator.
@@ -261,6 +262,11 @@ func (c *Coordinator) NodeCount() int {
 // ReplicationFactor returns the configured replication factor.
 func (c *Coordinator) ReplicationFactor() int {
 	return c.replicationFactor
+}
+
+// NodeID returns this node's ID.
+func (c *Coordinator) NodeID() string {
+	return c.nodeID
 }
 
 // ShardMap returns a map of collection ID → owner node ID for the given collection IDs.
