@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veda/vectordb/internal/events"
+	"github.com/POTATO-VE1/Magnitude/internal/events"
 )
 
 // Compactor materializes vectors from an in-memory index to disk.

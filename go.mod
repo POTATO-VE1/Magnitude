@@ -1,4 +1,4 @@
-module github.com/veda/vectordb
+module github.com/POTATO-VE1/Magnitude
 
 go 1.25.0
 

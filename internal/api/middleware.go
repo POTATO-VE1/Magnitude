@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	obs "github.com/veda/vectordb/internal/observability"
+	obs "github.com/POTATO-VE1/Magnitude/internal/observability"
 )
 
 // responseWriter wraps http.ResponseWriter to capture the status code.

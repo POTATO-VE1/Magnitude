@@ -26,12 +26,12 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/veda/vectordb/internal/api"
-	"github.com/veda/vectordb/internal/collection"
-	"github.com/veda/vectordb/internal/config"
-	"github.com/veda/vectordb/internal/events"
-	"github.com/veda/vectordb/internal/metadata"
-	"github.com/veda/vectordb/internal/storage"
+	"github.com/POTATO-VE1/Magnitude/internal/api"
+	"github.com/POTATO-VE1/Magnitude/internal/collection"
+	"github.com/POTATO-VE1/Magnitude/internal/config"
+	"github.com/POTATO-VE1/Magnitude/internal/events"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/storage"
 )
 
 func main() {

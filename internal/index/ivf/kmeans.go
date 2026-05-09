@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/veda/vectordb/internal/distance"
+	"github.com/POTATO-VE1/Magnitude/internal/distance"
 )
 
 // KMeans implements K-Means++ clustering with parallel assignment.

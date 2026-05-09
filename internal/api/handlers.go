@@ -17,9 +17,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/veda/vectordb/internal/collection"
-	"github.com/veda/vectordb/internal/config"
-	"github.com/veda/vectordb/internal/security"
+	"github.com/POTATO-VE1/Magnitude/internal/collection"
+	"github.com/POTATO-VE1/Magnitude/internal/config"
+	"github.com/POTATO-VE1/Magnitude/internal/security"
 )
 
 // Envelope is the standard JSON response wrapper.

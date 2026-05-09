@@ -21,16 +21,16 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/veda/vectordb/internal/events"
-	"github.com/veda/vectordb/internal/index"
-	"github.com/veda/vectordb/internal/index/flat"
-	"github.com/veda/vectordb/internal/index/hnsw"
-	"github.com/veda/vectordb/internal/index/ivf"
-	"github.com/veda/vectordb/internal/index/spann"
-	"github.com/veda/vectordb/internal/index/sparse"
-	"github.com/veda/vectordb/internal/metadata"
-	"github.com/veda/vectordb/internal/search"
-	"github.com/veda/vectordb/internal/storage"
+	"github.com/POTATO-VE1/Magnitude/internal/events"
+	"github.com/POTATO-VE1/Magnitude/internal/index"
+	"github.com/POTATO-VE1/Magnitude/internal/index/flat"
+	"github.com/POTATO-VE1/Magnitude/internal/index/hnsw"
+	"github.com/POTATO-VE1/Magnitude/internal/index/ivf"
+	"github.com/POTATO-VE1/Magnitude/internal/index/spann"
+	"github.com/POTATO-VE1/Magnitude/internal/index/sparse"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/search"
+	"github.com/POTATO-VE1/Magnitude/internal/storage"
 )
 
 // Collection wraps an Index with WAL and metadata management.

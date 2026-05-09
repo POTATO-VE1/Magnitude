@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veda/vectordb/internal/distance"
-	vdberrors "github.com/veda/vectordb/internal/errors"
-	"github.com/veda/vectordb/internal/index"
-	"github.com/veda/vectordb/internal/index/flat"
+	"github.com/POTATO-VE1/Magnitude/internal/distance"
+	vdberrors "github.com/POTATO-VE1/Magnitude/internal/errors"
+	"github.com/POTATO-VE1/Magnitude/internal/index"
+	"github.com/POTATO-VE1/Magnitude/internal/index/flat"
 )
 
 // IVFIndex implements approximate nearest-neighbor search using inverted file indexing.

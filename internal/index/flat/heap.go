@@ -7,7 +7,7 @@ import (
 	"container/heap"
 	"sync"
 
-	"github.com/veda/vectordb/internal/index"
+	"github.com/POTATO-VE1/Magnitude/internal/index"
 )
 
 // distHeap is a max-heap of SearchResults ordered by distance (worst first).

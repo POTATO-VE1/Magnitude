@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/veda/vectordb/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 )
 
 // ForkCollection creates a new collection that is a logical copy of src.

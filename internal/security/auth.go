@@ -18,7 +18,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/veda/vectordb/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 )
 
 // Authenticator validates API keys using SHA-256 hash comparison.

@@ -3,8 +3,8 @@ package quantize
 import (
 	"context"
 
-	"github.com/veda/vectordb/internal/distance"
-	"github.com/veda/vectordb/internal/index"
+	"github.com/POTATO-VE1/Magnitude/internal/distance"
+	"github.com/POTATO-VE1/Magnitude/internal/index"
 )
 
 // InnerQuantizedIndex represents a quantized index (e.g. IVF or HNSW) that operates

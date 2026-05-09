@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/veda/vectordb/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 	"golang.org/x/time/rate"
 )
 

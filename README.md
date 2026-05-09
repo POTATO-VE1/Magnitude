@@ -96,13 +96,21 @@ git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
 ```
 
-### 2. Start the Go Backend Server
+### 2. Generate TLS Certificates
+The server defaults to HTTPS. Generate a self-signed cert for local development:
+```bash
+mkdir -p certs && openssl req -x509 -newkey rsa:4096 \
+  -keyout certs/server.key -out certs/server.crt \
+  -days 365 -nodes -subj '/CN=localhost'
+```
+
+### 3. Start the Go Backend Server
 Start the high-performance Go database server in the background (or in a separate terminal):
 ```bash
 go run cmd/server/main.go
 ```
 
-### 3. Setup the Python Client
+### 4. Setup the Python Client
 Open a new terminal window, navigate to the client folder, and install the AI dependencies. (Note: The CLIP model weights will be downloaded automatically on the first run).
 ```bash
 cd python-client
@@ -117,7 +125,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Download a Sample Image Dataset
+### 5. Download a Sample Image Dataset
 If you don't have a folder of images ready, you can download a 5,000 image dataset (COCO 2017 Validation Set - ~800MB) to really test the database's power:
 ```bash
 wget http://images.cocodataset.org/zips/val2017.zip
@@ -133,13 +141,13 @@ curl -LO https://upload.wikimedia.org/wikipedia/commons/3/3a/Cat03.jpg
 cd ..
 ```
 
-### 5. Ingest Images
+### 6. Ingest Images
 Point the ingest script to your image directory (e.g., `val2017` if you downloaded the 5k dataset). This will convert your images into 512-dimensional embeddings and store them in the VectorDB:
 ```bash
 python ingest.py --dir val2017 --batch-size 16
 ```
 
-### 6. Semantic Search!
+### 7. Semantic Search!
 Run the interactive search prompt:
 ```bash
 python search.py
