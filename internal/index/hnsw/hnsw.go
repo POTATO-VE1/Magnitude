@@ -57,7 +57,7 @@ type HNSWIndex struct {
 	nodes          []node         // all nodes (index = internal node ID)
 	idToNode       map[uint64]int // external ID → internal node index
 	rng            *rand.Rand
-	deleted        map[uint64]bool // soft-delete tombstones
+	deleted        map[int]bool // soft-delete tombstones by internal nodeIdx
 	snapshotPath   string          // file path for snapshot persistence
 	snapshotSeqID  uint64          // WAL seqID at last snapshot time
 }
@@ -100,7 +100,7 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		nodes:          make([]node, 0, 1024),
 		idToNode:       make(map[uint64]int),
 		rng:            rand.New(rand.NewSource(42)),
-		deleted:        make(map[uint64]bool),
+		deleted:        make(map[int]bool),
 	}, nil
 }
 
@@ -139,15 +139,13 @@ func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 // insertLocked performs the actual insert. Must be called with h.mu held.
 func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if nodeIdx, exists := h.idToNode[id]; exists {
-		if h.deleted[id] {
-			// Clear soft-delete flag and update vector in place.
-			// This is a tradeoff: updates don't perfectly re-optimize the graph,
-			// but it prevents re-insertion failure for deleted vectors.
-			delete(h.deleted, id)
-			copy(h.nodes[nodeIdx].vector, vector)
-			return nil
+		if h.deleted[nodeIdx] {
+			// Detach old soft-deleted node so we can resurrect as a new insert
+			delete(h.idToNode, id)
+			// The old node remains in h.nodes and h.deleted[nodeIdx], but is unreachable by ID
+		} else {
+			return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 		}
-		return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 	}
 
 	// Assign level
@@ -260,7 +258,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 	// Extract top-k, filtering deleted nodes
 	var results []index.SearchResult
 	for _, c := range candidates {
-		if h.deleted[h.nodes[c.nodeIdx].id] {
+		if h.deleted[c.nodeIdx] {
 			continue
 		}
 		results = append(results, index.SearchResult{
@@ -286,10 +284,11 @@ func (h *HNSWIndex) Delete(id uint64) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if _, exists := h.idToNode[id]; !exists {
+	nodeIdx, exists := h.idToNode[id]
+	if !exists {
 		return vdberrors.Newf(vdberrors.ErrVectorNotFound, "vector ID %d not found", id)
 	}
-	h.deleted[id] = true
+	h.deleted[nodeIdx] = true
 	return nil
 }
 
@@ -315,8 +314,8 @@ func (h *HNSWIndex) Rebuild() error {
 		vec []float32
 	}, 0, len(h.nodes)-len(h.deleted))
 
-	for _, n := range h.nodes {
-		if !h.deleted[n.id] {
+	for nodeIdx, n := range h.nodes {
+		if !h.deleted[nodeIdx] {
 			vec := make([]float32, h.dim)
 			copy(vec, n.vector)
 			liveNodes = append(liveNodes, struct {
@@ -329,7 +328,7 @@ func (h *HNSWIndex) Rebuild() error {
 	// Reset graph state
 	h.nodes = h.nodes[:0]
 	h.idToNode = make(map[uint64]int)
-	h.deleted = make(map[uint64]bool)
+	h.deleted = make(map[int]bool)
 	h.maxLevel = -1
 	h.entryPoint = -1
 	h.rng = rand.New(rand.NewSource(time.Now().UnixNano()))

@@ -485,6 +485,31 @@ func (s *SysDB) SaveVectorMetadata(collectionID string, vectorID uint64, meta ma
 	return nil
 }
 
+// LoadVectorMetadata loads metadata for a specific vector.
+func (s *SysDB) LoadVectorMetadata(collectionID string, vectorID uint64) (map[string]any, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		"SELECT meta_key, meta_value FROM vector_metadata WHERE collection_id = ? AND vector_id = ?",
+		collectionID, vectorID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("metadata: loading vector metadata: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]any)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("metadata: scanning vector metadata: %w", err)
+		}
+		result[key] = value
+	}
+	return result, rows.Err()
+}
+
 // LoadAllVectorMetadata loads all metadata for all vectors in a collection.
 // Called during startup to repopulate the in-memory vectorMeta map.
 func (s *SysDB) LoadAllVectorMetadata(collectionID string) (map[uint64]map[string]any, error) {

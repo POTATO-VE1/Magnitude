@@ -33,6 +33,9 @@ type WAL interface {
 	// Used by the Query Executor to merge recent writes with the index.
 	ReadFrom(afterSeq uint64) ([]WALEntry, error)
 
+	// GetMaxSeqID returns the highest sequence ID currently in the WAL.
+	GetMaxSeqID() (uint64, error)
+
 	// Truncate removes all entries with seqID <= upToSeq.
 	// Called by the Compactor after segments are written to disk.
 	Truncate(upToSeq uint64) error
@@ -323,6 +326,25 @@ func (w *SQLiteWAL) ReadFrom(afterSeq uint64) ([]WALEntry, error) {
 		entries = append(entries, e)
 	}
 	return entries, rows.Err()
+}
+
+// GetMaxSeqID returns the highest sequence ID currently in the WAL.
+// This executes an O(1) query using the index instead of reading all entries.
+func (w *SQLiteWAL) GetMaxSeqID() (uint64, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	var maxSeqID sql.NullInt64
+	err := w.db.QueryRow("SELECT MAX(seq_id) FROM wal_entries").Scan(&maxSeqID)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("wal: getting max seq id: %w", err)
+	}
+	
+	if !maxSeqID.Valid {
+		return 0, nil
+	}
+	
+	return uint64(maxSeqID.Int64), nil
 }
 
 // Truncate removes all entries with seqID <= upToSeq.

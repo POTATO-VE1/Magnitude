@@ -57,24 +57,19 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 		return nil, fmt.Errorf("fork: creating index for %q: %w", newName, err)
 	}
 
-	// Deep-copy vector metadata from source
-	srcCol.mu.RLock()
-	newVectorMeta := make(map[uint64]metadata.VectorMetadata, len(srcCol.vectorMeta))
-	for id, meta := range srcCol.vectorMeta {
-		metaCopy := make(metadata.VectorMetadata, len(meta))
-		for k, v := range meta {
-			metaCopy[k] = v
+	// Deep-copy vector metadata from source via SysDB
+	allMeta, err := m.sysdb.LoadAllVectorMetadata(srcID)
+	if err == nil {
+		for id, metaMap := range allMeta {
+			m.sysdb.SaveVectorMetadata(newMeta.ID, id, metaMap)
 		}
-		newVectorMeta[id] = metaCopy
 	}
-	srcCol.mu.RUnlock()
 
 	newCol := &Collection{
 		meta:       newMeta,
 		idx:        newIdx,
 		wal:        m.wal,
 		sysdb:      m.sysdb,
-		vectorMeta: newVectorMeta,
 	}
 
 	m.mu.Lock()

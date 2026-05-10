@@ -42,7 +42,6 @@ type Collection struct {
 	invertedIndex *sparse.InvertedIndex
 	wal           storage.WAL
 	sysdb         *metadata.SysDB
-	vectorMeta    map[uint64]metadata.VectorMetadata // per-vector metadata for hybrid search
 }
 
 // Manager manages all collections and routes API operations.
@@ -139,24 +138,6 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (
 			invertedIndex: sparse.NewInvertedIndex(),
 			wal:           wal,
 			sysdb:         sysdb,
-			vectorMeta:    make(map[uint64]metadata.VectorMetadata),
-		}
-
-		// Load persisted vector metadata from SQLite
-		persistedMeta, err := sysdb.LoadAllVectorMetadata(meta.ID)
-		if err != nil {
-			slog.Warn("failed to load vector metadata",
-				"collection", meta.Name,
-				"error", err,
-			)
-		} else if len(persistedMeta) > 0 {
-			for id, m := range persistedMeta {
-				mgr.collections[meta.ID].vectorMeta[id] = metadata.VectorMetadata(m)
-			}
-			slog.Info("loaded vector metadata",
-				"collection", meta.Name,
-				"vectors_with_metadata", len(persistedMeta),
-			)
 		}
 
 		slog.Info("restored collection",
@@ -205,7 +186,6 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 		invertedIndex: sparse.NewInvertedIndex(),
 		wal:           m.wal,
 		sysdb:         m.sysdb,
-		vectorMeta:    make(map[uint64]metadata.VectorMetadata),
 	}
 	m.mu.Unlock()
 
@@ -244,7 +224,6 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 		invertedIndex: sparse.NewInvertedIndex(),
 		wal:           m.wal,
 		sysdb:         m.sysdb,
-		vectorMeta:    make(map[uint64]metadata.VectorMetadata),
 	}
 	m.mu.Unlock()
 
@@ -429,7 +408,6 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 
 		// Store metadata if provided
 		if meta != nil && i < len(meta) && meta[i] != nil {
-			col.vectorMeta[id] = metadata.VectorMetadata(meta[i])
 			// Persist to SQLite for durability across restarts
 			if err := col.sysdb.SaveVectorMetadata(collectionID, id, meta[i]); err != nil {
 				slog.Warn("failed to persist vector metadata",
@@ -501,12 +479,13 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 
 			filtered := res[:0]
 			for _, r := range res {
-				if filter.Match(col.vectorMeta[r.ID]) {
+				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.ID)
+				if filter.Match(metaMap) {
 					filtered = append(filtered, r)
 				}
 			}
 
-			if len(filtered) >= k || searchK >= maxK || len(res) < searchK {
+			if len(filtered) >= k || searchK >= maxK || len(res) < searchK || searchK >= k*32 {
 				if len(filtered) > k {
 					filtered = filtered[:k]
 				}
@@ -613,19 +592,21 @@ func (m *Manager) HybridSearch(
 
 			filteredDense = nil
 			for _, r := range denseResults {
-				if filter.Match(col.vectorMeta[r.ID]) {
+				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.ID)
+				if filter.Match(metaMap) {
 					filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
 				}
 			}
 
 			filteredSparse = nil
 			for _, r := range sparseResults {
-				if filter.Match(col.vectorMeta[r.DocID]) {
+				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.DocID)
+				if filter.Match(metaMap) {
 					filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
 				}
 			}
 
-			if (len(filteredDense) >= topK && len(filteredSparse) >= topK) || searchK >= maxK || (len(denseResults) < searchK && len(sparseResults) < searchK) {
+			if (len(filteredDense) >= topK && len(filteredSparse) >= topK) || searchK >= maxK || (len(denseResults) < searchK && len(sparseResults) < searchK) || searchK >= topK*32 {
 				break
 			}
 			searchK *= 2
@@ -699,8 +680,8 @@ func (m *Manager) Flush() error {
 	// Get current max WAL seqID for snapshot coordination
 	var maxSeqID uint64
 	if m.dataDir != "" {
-		if entries, err := m.wal.ReadFrom(0); err == nil && len(entries) > 0 {
-			maxSeqID = entries[len(entries)-1].SeqID
+		if seq, err := m.wal.GetMaxSeqID(); err == nil {
+			maxSeqID = seq
 		}
 	}
 
@@ -831,7 +812,7 @@ func (m *Manager) GetVectorsMetadata(collectionID string, ids []uint64) (map[uin
 
 	result := make(map[uint64]map[string]any, len(ids))
 	for _, id := range ids {
-		if meta, ok := col.vectorMeta[id]; ok && meta != nil {
+		if meta, err := col.sysdb.LoadVectorMetadata(collectionID, id); err == nil && len(meta) > 0 {
 			result[id] = meta
 		}
 	}
