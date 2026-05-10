@@ -270,9 +270,10 @@ func (m *Manager) GetCollection(id string) (*metadata.Collection, error) {
 
 	col.mu.RLock()
 	defer col.mu.RUnlock()
-	// Update vector count from live index
-	col.meta.VectorCount = col.idx.Len()
-	return col.meta, nil
+	// Return a copy to avoid data races
+	metaCopy := *col.meta
+	metaCopy.VectorCount = col.idx.Len()
+	return &metaCopy, nil
 }
 
 // GetCollectionScoped returns a collection by ID, only if it belongs to the given tenant.
@@ -293,8 +294,9 @@ func (m *Manager) GetCollectionScoped(tenantID, collectionID string) (*metadata.
 		return nil, nil // cross-tenant isolation: 404, not 403
 	}
 
-	col.meta.VectorCount = col.idx.Len()
-	return col.meta, nil
+	metaCopy := *col.meta
+	metaCopy.VectorCount = col.idx.Len()
+	return &metaCopy, nil
 }
 
 // ListCollections returns all collections.
@@ -305,8 +307,9 @@ func (m *Manager) ListCollections() ([]*metadata.Collection, error) {
 	result := make([]*metadata.Collection, 0, len(m.collections))
 	for _, col := range m.collections {
 		col.mu.RLock()
-		col.meta.VectorCount = col.idx.Len()
-		result = append(result, col.meta)
+		metaCopy := *col.meta
+		metaCopy.VectorCount = col.idx.Len()
+		result = append(result, &metaCopy)
 		col.mu.RUnlock()
 	}
 	return result, nil
@@ -321,8 +324,9 @@ func (m *Manager) ListCollectionsScoped(tenantID, databaseID string) ([]*metadat
 	for _, col := range m.collections {
 		col.mu.RLock()
 		if col.meta.TenantID == tenantID && col.meta.DatabaseID == databaseID {
-			col.meta.VectorCount = col.idx.Len()
-			result = append(result, col.meta)
+			metaCopy := *col.meta
+			metaCopy.VectorCount = col.idx.Len()
+			result = append(result, &metaCopy)
 		}
 		col.mu.RUnlock()
 	}
@@ -385,6 +389,9 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 	col.mu.Lock()
 	defer col.mu.Unlock()
 
+	ops := make([]storage.WALOp, len(ids))
+	docs := make([]string, len(ids))
+
 	for i, id := range ids {
 		var doc string
 		if meta != nil && i < len(meta) && meta[i] != nil {
@@ -392,20 +399,30 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 				doc = d
 			}
 		}
+		docs[i] = doc
 
-		// WAL first (durability guarantee)
-		_, err := col.wal.Append(storage.WALOp{
+		ops[i] = storage.WALOp{
 			Type:         storage.WALOpInsert,
 			CollectionID: collectionID,
 			ID:           id,
 			Vector:       vectors[i],
 			Document:     doc,
-		})
-		if err != nil {
-			return fmt.Errorf("collection: WAL append failed for vector %d: %w", id, err)
+		}
+	}
+
+	// WAL first (durability guarantee)
+	_, err := col.wal.AppendBatch(ops)
+	if err != nil {
+		return fmt.Errorf("collection: WAL append batch failed: %w", err)
+	}
+
+	// Then index (in-memory, fast)
+	for i, id := range ids {
+		// Clear any existing tombstone if this is a re-insertion
+		if err := m.sysdb.RemoveTombstone(collectionID, id); err != nil {
+			slog.Warn("failed to clear tombstone", "vector_id", id, "error", err)
 		}
 
-		// Then index (in-memory, fast)
 		if err := col.idx.Insert(id, vectors[i]); err != nil {
 			return fmt.Errorf("collection: index insert failed for vector %d: %w", id, err)
 		}
@@ -422,8 +439,8 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 			}
 		}
 
-		if doc != "" {
-			col.invertedIndex.AddDocument(id, doc)
+		if docs[i] != "" {
+			col.invertedIndex.AddDocument(id, docs[i])
 		}
 	}
 
@@ -462,35 +479,46 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 		}
 	}
 
-	// Over-fetch if filtering, since some results will be filtered out
-	searchK := k
-	if filter != nil {
-		searchK = k * 4 // fetch 4x more to account for filtering
+	var results []index.SearchResult
+	if filter == nil {
+		var err error
+		results, err = col.idx.Search(ctx, query, k, nprobe)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		searchK := k * 4
 		if searchK < 50 {
 			searchK = 50
 		}
-	}
+		maxK := col.idx.Len()
 
-	results, err := col.idx.Search(ctx, query, searchK, nprobe)
-	if err != nil {
-		return nil, err
-	}
+		for {
+			res, err := col.idx.Search(ctx, query, searchK, nprobe)
+			if err != nil {
+				return nil, err
+			}
 
-	// Apply metadata filter if present
-	if filter != nil {
-		filtered := results[:0]
-		for _, r := range results {
-			meta := col.vectorMeta[r.ID]
-			if filter.Match(meta) {
-				filtered = append(filtered, r)
-				if len(filtered) >= k {
-					break
+			filtered := res[:0]
+			for _, r := range res {
+				if filter.Match(col.vectorMeta[r.ID]) {
+					filtered = append(filtered, r)
 				}
 			}
+
+			if len(filtered) >= k || searchK >= maxK || len(res) < searchK {
+				if len(filtered) > k {
+					filtered = filtered[:k]
+				}
+				results = filtered
+				break
+			}
+
+			searchK *= 2
+			if searchK > maxK {
+				searchK = maxK
+			}
 		}
-		results = filtered
-	} else if len(results) > k {
-		results = results[:k]
 	}
 
 	return results, nil
@@ -526,48 +554,84 @@ func (m *Manager) HybridSearch(
 		}
 	}
 
-	searchK := topK
-	if filter != nil {
-		searchK = topK * 4
+	var filteredDense []search.RankedResult
+	var filteredSparse []search.RankedResult
+
+	if filter == nil {
+		var (
+			denseResults  []index.SearchResult
+			sparseResults []sparse.SearchResult
+			denseErr      error
+			wg            sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			denseResults, denseErr = col.idx.Search(ctx, queryVector, topK, nprobe)
+		}()
+		go func() {
+			defer wg.Done()
+			sparseResults = col.invertedIndex.Search(queryText, topK)
+		}()
+		wg.Wait()
+		if denseErr != nil {
+			return nil, denseErr
+		}
+		for _, r := range denseResults {
+			filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
+		}
+		for _, r := range sparseResults {
+			filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
+		}
+	} else {
+		searchK := topK * 4
 		if searchK < 50 {
 			searchK = 50
 		}
-	}
+		maxK := col.idx.Len()
 
-	var (
-		denseResults  []index.SearchResult
-		sparseResults []sparse.SearchResult
-		denseErr      error
-		wg            sync.WaitGroup
-	)
+		for {
+			var (
+				denseResults  []index.SearchResult
+				sparseResults []sparse.SearchResult
+				denseErr      error
+				wg            sync.WaitGroup
+			)
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				denseResults, denseErr = col.idx.Search(ctx, queryVector, searchK, nprobe)
+			}()
+			go func() {
+				defer wg.Done()
+				sparseResults = col.invertedIndex.Search(queryText, searchK)
+			}()
+			wg.Wait()
+			if denseErr != nil {
+				return nil, denseErr
+			}
 
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		denseResults, denseErr = col.idx.Search(ctx, queryVector, searchK*2, nprobe)
-	}()
-	go func() {
-		defer wg.Done()
-		sparseResults = col.invertedIndex.Search(queryText, searchK*2)
-	}()
-	wg.Wait()
+			filteredDense = nil
+			for _, r := range denseResults {
+				if filter.Match(col.vectorMeta[r.ID]) {
+					filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
+				}
+			}
 
-	if denseErr != nil {
-		return nil, denseErr
-	}
+			filteredSparse = nil
+			for _, r := range sparseResults {
+				if filter.Match(col.vectorMeta[r.DocID]) {
+					filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
+				}
+			}
 
-	// Filter before fusion
-	var filteredDense []search.RankedResult
-	for _, r := range denseResults {
-		if filter == nil || filter.Match(col.vectorMeta[r.ID]) {
-			filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
-		}
-	}
-
-	var filteredSparse []search.RankedResult
-	for _, r := range sparseResults {
-		if filter == nil || filter.Match(col.vectorMeta[r.DocID]) {
-			filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
+			if (len(filteredDense) >= topK && len(filteredSparse) >= topK) || searchK >= maxK || (len(denseResults) < searchK && len(sparseResults) < searchK) {
+				break
+			}
+			searchK *= 2
+			if searchK > maxK {
+				searchK = maxK
+			}
 		}
 	}
 

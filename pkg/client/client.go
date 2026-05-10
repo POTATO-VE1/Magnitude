@@ -135,11 +135,19 @@ func (c *Client) DeleteCollection(ctx context.Context, id string) error {
 
 // ── Vector operations ───────────────────────────────────────────────────────
 
-// Insert inserts a batch of vectors into a collection.
+// Insert inserts a batch of vectors into a collection without metadata.
 func (c *Client) Insert(ctx context.Context, collectionID string, ids []uint64, vectors [][]float32) error {
+	return c.InsertWithMetadata(ctx, collectionID, ids, vectors, nil)
+}
+
+// InsertWithMetadata inserts a batch of vectors into a collection with optional metadata.
+func (c *Client) InsertWithMetadata(ctx context.Context, collectionID string, ids []uint64, vectors [][]float32, meta []map[string]any) error {
 	body := map[string]any{
 		"ids":     ids,
 		"vectors": vectors,
+	}
+	if meta != nil {
+		body["metadata"] = meta
 	}
 	return c.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/collections/%s/vectors", collectionID), body, nil)
 }

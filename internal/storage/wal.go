@@ -96,6 +96,7 @@ type SQLiteWAL struct {
 	syncDelay   time.Duration
 	pendingSync bool
 	closeCh     chan struct{}
+	wg          sync.WaitGroup
 }
 
 // NewSQLiteWAL creates a new SQLite-backed WAL at the given path.
@@ -175,6 +176,7 @@ func NewSQLiteWAL(path string, opts ...WALOption) (*SQLiteWAL, error) {
 
 	// Start delayed sync goroutine if needed
 	if w.syncMode == "delayed" && w.syncDelay > 0 {
+		w.wg.Add(1)
 		go w.delayedSyncLoop()
 	}
 
@@ -345,6 +347,8 @@ func (w *SQLiteWAL) Close() error {
 		close(w.closeCh)
 	}
 
+	w.wg.Wait()
+
 	// In delayed mode, do a final checkpoint to ensure all data is durable
 	if w.syncMode == "delayed" {
 		w.mu.Lock()
@@ -358,6 +362,7 @@ func (w *SQLiteWAL) Close() error {
 // delayedSyncLoop periodically triggers WAL checkpoints in "delayed" mode.
 // This batches multiple writes into a single fsync for better throughput.
 func (w *SQLiteWAL) delayedSyncLoop() {
+	defer w.wg.Done()
 	ticker := time.NewTicker(w.syncDelay)
 	defer ticker.Stop()
 

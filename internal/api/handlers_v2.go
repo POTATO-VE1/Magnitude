@@ -316,6 +316,10 @@ func (h *Handler) InsertVectorsScoped(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Envelope{Error: "ids and vectors must have the same length"})
 		return
 	}
+	if len(req.Metadata) > 0 && len(req.Metadata) != len(req.IDs) {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "metadata array must match ids length if provided"})
+		return
+	}
 
 	for _, meta := range req.Metadata {
 		if err := validateMetadata(meta); err != nil {

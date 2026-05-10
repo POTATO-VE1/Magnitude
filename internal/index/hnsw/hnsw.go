@@ -138,7 +138,15 @@ func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 
 // insertLocked performs the actual insert. Must be called with h.mu held.
 func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
-	if _, exists := h.idToNode[id]; exists {
+	if nodeIdx, exists := h.idToNode[id]; exists {
+		if h.deleted[id] {
+			// Clear soft-delete flag and update vector in place.
+			// This is a tradeoff: updates don't perfectly re-optimize the graph,
+			// but it prevents re-insertion failure for deleted vectors.
+			delete(h.deleted, id)
+			copy(h.nodes[nodeIdx].vector, vector)
+			return nil
+		}
 		return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 	}
 

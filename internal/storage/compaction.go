@@ -175,6 +175,14 @@ func CompactVectors(targetPath string, vectors []float32, dim int) error {
 		return fmt.Errorf("compaction: atomic rename %q → %q: %w", tmpPath, targetPath, err)
 	}
 
+	// Fsync directory to ensure rename is durably recorded
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	} else {
+		slog.Warn("compaction: failed to open directory for fsync", "dir", dir, "error", err)
+	}
+
 	slog.Info("compaction complete",
 		"path", targetPath,
 		"vectors", vectorCount,

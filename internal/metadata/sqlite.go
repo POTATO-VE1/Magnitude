@@ -400,6 +400,29 @@ func (s *SysDB) AddTombstone(collectionID string, vectorID uint64) error {
 	return nil
 }
 
+// RemoveTombstone clears a recorded deletion, used when a vector is re-inserted.
+func (s *SysDB) RemoveTombstone(collectionID string, vectorID uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(
+		"DELETE FROM tombstones WHERE collection_id = ? AND vector_id = ?",
+		collectionID, vectorID,
+	)
+	if err != nil {
+		return fmt.Errorf("metadata: removing tombstone: %w", err)
+	}
+
+	// Update in-memory set
+	s.tombstoneMu.Lock()
+	if s.tombstones[collectionID] != nil {
+		delete(s.tombstones[collectionID], vectorID)
+	}
+	s.tombstoneMu.Unlock()
+
+	return nil
+}
+
 // IsTombstoned checks if a vector has been deleted (hot path, in-memory only).
 func (s *SysDB) IsTombstoned(collectionID string, vectorID uint64) bool {
 	s.tombstoneMu.RLock()
