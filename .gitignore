@@ -36,3 +36,7 @@ Thumbs.db
 *.swp
 *.bak
 
+# ── AI Generated Files ──
+TIER3_IMPLEMENTATION_PLAN.md
+agent.md
+context.md
