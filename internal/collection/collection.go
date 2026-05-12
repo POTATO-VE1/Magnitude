@@ -835,10 +835,10 @@ func (m *Manager) SnapshotCollection(collectionID string) error {
 		return nil // not an HNSW index, nothing to snapshot
 	}
 
-	// Get current max WAL seqID
+	// Get current max WAL seqID (O(1) query, not full WAL scan)
 	var maxSeqID uint64
-	if entries, err := m.wal.ReadFrom(0); err == nil && len(entries) > 0 {
-		maxSeqID = entries[len(entries)-1].SeqID
+	if seq, err := m.wal.GetMaxSeqID(); err == nil {
+		maxSeqID = seq
 	}
 	hnswIdx.SetSnapshotSeqID(maxSeqID)
 
@@ -851,7 +851,10 @@ func createIndex(dim int, metric, indexType string) (index.Index, error) {
 	case "flat":
 		return flat.NewFlatIndex(dim, metric)
 	case "ivf":
-		return ivf.NewIVFIndex(dim, 256, 5, metric, 0.10)
+		return ivf.NewIVFIndex(dim, 256, 5, metric, 0, 0.10)
+	case "ivfpq":
+		// M=8 for default 64x compression on 512D vectors
+		return ivf.NewIVFIndex(dim, 256, 5, metric, 8, 0.10)
 	case "hnsw":
 		return hnsw.NewHNSWIndex(dim, 16, 200, 50, metric)
 	case "spann":

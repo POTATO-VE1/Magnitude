@@ -108,9 +108,8 @@ func TenantAuthMiddleware(sysdb *metadata.SysDB, enabled bool) func(http.Handler
 				return
 			}
 
-			auth := r.Header.Get("Authorization")
-			token, ok := strings.CutPrefix(auth, "Bearer ")
-			if !ok || token == "" {
+			token := extractBearerToken(r)
+			if token == "" {
 				http.Error(w, `{"error":"missing Authorization header"}`, http.StatusUnauthorized)
 				return
 			}

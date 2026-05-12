@@ -150,13 +150,10 @@ func (e *VDBError) Is(target error) bool {
 //
 //	if vdberrors.IsCode(err, vdberrors.ErrDuplicateID) { ... }
 func IsCode(err error, code ErrorCode) bool {
-	var vdbErr *VDBError
-	// Walk the error chain
 	for err != nil {
 		if e, ok := err.(*VDBError); ok && e.Code == code {
 			return true
 		}
-		_ = vdbErr
 		u, ok := err.(interface{ Unwrap() error })
 		if !ok {
 			break

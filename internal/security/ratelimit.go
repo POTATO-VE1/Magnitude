@@ -16,6 +16,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,27 +124,39 @@ func (rl *RateLimiter) Stop() {
 	<-rl.done
 }
 
-// extractIP extracts the client IP from X-Forwarded-For or RemoteAddr.
+// extractIP extracts the client IP, only trusting X-Forwarded-For from
+// trusted proxies (localhost/private network). Direct clients cannot spoof
+// their IP via X-Forwarded-For because RemoteAddr is checked first.
 func extractIP(r *http.Request) string {
-	// Check X-Forwarded-For first (for reverse proxy setups)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP (client IP)
-		if i := len(xff); i > 0 {
-			for j := 0; j < len(xff); j++ {
-				if xff[j] == ',' {
-					return xff[:j]
-				}
+	if isTrustedProxy(r.RemoteAddr) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				return strings.TrimSpace(xff[:idx])
 			}
-			return xff
+			return strings.TrimSpace(xff)
 		}
 	}
 
-	// Fall back to RemoteAddr
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return ip
+}
+
+// isTrustedProxy returns true if the remote address is from a trusted proxy
+// (loopback or private network). Only trusted proxies' X-Forwarded-For headers
+// are honored to prevent IP spoofing.
+func isTrustedProxy(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
 }
 
 // ── Multi-Tenancy Rate Limiter ──────────────────────────────────────────────

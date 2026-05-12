@@ -229,6 +229,7 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 		idToNode:       idToNode,
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
+		visited:        make([]uint64, len(nodes)),
 	}
 
 	return h, hdr.SeqID, nil

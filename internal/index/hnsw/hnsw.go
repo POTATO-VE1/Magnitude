@@ -25,6 +25,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -58,8 +59,10 @@ type HNSWIndex struct {
 	idToNode       map[uint64]int // external ID → internal node index
 	rng            *rand.Rand
 	deleted        map[int]bool // soft-delete tombstones by internal nodeIdx
-	snapshotPath   string          // file path for snapshot persistence
-	snapshotSeqID  uint64          // WAL seqID at last snapshot time
+	snapshotPath   string       // file path for snapshot persistence
+	snapshotSeqID  uint64       // WAL seqID at last snapshot time
+	searchGen      uint64       // monotonically increasing search generation
+	visited        []uint64     // visited[nodeIdx] == searchGen means visited
 }
 
 // NewHNSWIndex creates a new HNSW index.
@@ -99,8 +102,9 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		entryPoint:     -1,
 		nodes:          make([]node, 0, 1024),
 		idToNode:       make(map[uint64]int),
-		rng:            rand.New(rand.NewSource(42)),
+		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
+		visited:        make([]uint64, 1024),
 	}, nil
 }
 
@@ -123,6 +127,14 @@ func (h *HNSWIndex) randomLevel() int {
 	return level
 }
 
+// ensureVisited grows the visited slice if needed to cover all nodes.
+// Must be called with h.mu held (at least RLock).
+func (h *HNSWIndex) ensureVisited() {
+	if len(h.visited) < len(h.nodes) {
+		h.visited = make([]uint64, len(h.nodes))
+	}
+}
+
 // Insert adds a vector with the given ID into the HNSW graph.
 func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 	if len(vector) != h.dim {
@@ -140,13 +152,13 @@ func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if nodeIdx, exists := h.idToNode[id]; exists {
 		if h.deleted[nodeIdx] {
-			// Detach old soft-deleted node so we can resurrect as a new insert
 			delete(h.idToNode, id)
-			// The old node remains in h.nodes and h.deleted[nodeIdx], but is unreachable by ID
 		} else {
 			return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 		}
 	}
+
+	h.ensureVisited()
 
 	// Assign level
 	level := h.randomLevel()
@@ -186,7 +198,7 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 		topLayer = h.maxLevel
 	}
 	for lc := topLayer; lc >= 0; lc-- {
-		candidates := h.searchLayer(vector, ep, h.efConstruction, lc)
+		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc)
 		// Select neighbors using the diversity heuristic
 		maxConn := h.m
 		if lc == 0 {
@@ -240,20 +252,28 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 
 	ef := h.efSearch
 	if nprobe > 0 {
-		ef = nprobe // allow efSearch override via nprobe parameter
+		ef = nprobe
 	}
 	if ef < k {
-		ef = k // ef must be at least k
+		ef = k
 	}
+
+	// Ensure visited slice is large enough for this search
+	h.ensureVisited()
 
 	// Phase 1: Greedy descent from top to layer 1
 	ep := h.entryPoint
 	for lc := h.maxLevel; lc >= 1; lc-- {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		ep = h.greedyClosest(query, ep, lc)
 	}
 
 	// Phase 2: Beam search at layer 0
-	candidates := h.searchLayer(query, ep, ef, 0)
+	candidates := h.searchLayer(ctx, query, ep, ef, 0)
 
 	// Extract top-k, filtering deleted nodes
 	var results []index.SearchResult
@@ -308,7 +328,7 @@ func (h *HNSWIndex) Rebuild() error {
 		return nil
 	}
 
-	// Collect live nodes
+	// Collect live nodes (reuse existing slices, no copy needed)
 	liveNodes := make([]struct {
 		id  uint64
 		vec []float32
@@ -316,12 +336,10 @@ func (h *HNSWIndex) Rebuild() error {
 
 	for nodeIdx, n := range h.nodes {
 		if !h.deleted[nodeIdx] {
-			vec := make([]float32, h.dim)
-			copy(vec, n.vector)
 			liveNodes = append(liveNodes, struct {
 				id  uint64
 				vec []float32
-			}{n.id, vec})
+			}{n.id, n.vector})
 		}
 	}
 
@@ -405,12 +423,12 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 
 // searchLayer performs beam search at a single layer starting from ep.
 // Returns candidates sorted by distance ascending (closest first).
-func (h *HNSWIndex) searchLayer(query []float32, ep int, ef int, layer int) []candidate {
-	epDist := h.distFn(query, h.nodes[ep].vector)
+func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int) []candidate {
+	h.searchGen++
+	gen := h.searchGen
+	h.visited[ep] = gen
 
-	// visited set
-	visited := make(map[int]bool)
-	visited[ep] = true
+	epDist := h.distFn(query, h.nodes[ep].vector)
 
 	// candidateHeap: min-heap of unexplored candidates
 	cands := &minCandHeap{{nodeIdx: ep, dist: epDist}}
@@ -423,18 +441,23 @@ func (h *HNSWIndex) searchLayer(query []float32, ep int, ef int, layer int) []ca
 	for cands.Len() > 0 {
 		c := heap.Pop(cands).(candidate)
 
-		// If the closest candidate is farther than the farthest result, stop
 		if results.Len() >= ef && c.dist > (*results)[0].dist {
 			break
 		}
 
-		// Explore neighbors
 		if layer < len(h.nodes[c.nodeIdx].friends) {
-			for _, friendIdx := range h.nodes[c.nodeIdx].friends[layer] {
-				if visited[friendIdx] {
+			for i, friendIdx := range h.nodes[c.nodeIdx].friends[layer] {
+				if i%100 == 0 {
+					select {
+					case <-ctx.Done():
+						return nil
+					default:
+					}
+				}
+				if h.visited[friendIdx] == gen {
 					continue
 				}
-				visited[friendIdx] = true
+				h.visited[friendIdx] = gen
 
 				d := h.distFn(query, h.nodes[friendIdx].vector)
 				friend := candidate{nodeIdx: friendIdx, dist: d}
@@ -450,7 +473,6 @@ func (h *HNSWIndex) searchLayer(query []float32, ep int, ef int, layer int) []ca
 		}
 	}
 
-	// Extract results sorted by distance ascending
 	sorted := make([]candidate, results.Len())
 	for i := len(sorted) - 1; i >= 0; i-- {
 		sorted[i] = heap.Pop(results).(candidate)
@@ -507,15 +529,9 @@ func (h *HNSWIndex) pruneConnections(nodeVec []float32, friends []int, maxConn i
 	}
 
 	// Sort candidates by distance (closest first)
-	for i := 0; i < len(candidates); i++ {
-		minIdx := i
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].dist < candidates[minIdx].dist {
-				minIdx = j
-			}
-		}
-		candidates[i], candidates[minIdx] = candidates[minIdx], candidates[i]
-	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
+	})
 
 	return h.selectNeighborsHeuristic(nodeVec, candidates, maxConn)
 }

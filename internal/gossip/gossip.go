@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -181,7 +182,7 @@ type Protocol struct {
 	config   Config
 	nodeID   string
 	seen     *seenSet
-	seqNo    uint64
+	seqNo    atomic.Uint64
 	callback EventCallback
 	peers    []string // known peer addresses (host:port)
 	mu       sync.RWMutex
@@ -248,13 +249,13 @@ func (g *Protocol) HandleMessage(msg Message) bool {
 
 // CreateMessage creates a new gossip message from this node.
 func (g *Protocol) CreateMessage(event EventKind, payload []byte) Message {
-	g.seqNo++
+	seq := g.seqNo.Add(1)
 	return Message{
 		Source:    g.nodeID,
 		Event:     event,
 		Payload:   payload,
 		Timestamp: time.Now().Truncate(time.Second),
-		SeqNo:     g.seqNo,
+		SeqNo:     seq,
 	}
 }
 
@@ -285,7 +286,7 @@ func (g *Protocol) GetStats() Stats {
 	return Stats{
 		SeenEntries: g.seen.size(),
 		PeerCount:   len(g.peers),
-		SeqNo:       g.seqNo,
+		SeqNo:       g.seqNo.Load(),
 		Running:     g.running,
 	}
 }

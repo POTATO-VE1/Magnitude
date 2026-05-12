@@ -12,14 +12,13 @@ package storage
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/POTATO-VE1/Magnitude/internal/events"
 )
@@ -36,6 +35,7 @@ type Compactor struct {
 	interval  time.Duration
 	cancel    context.CancelFunc
 	done      chan struct{}
+	running   bool
 	flowBus   *events.FlowBus           // optional
 	onCompact func(collectionID string) // called after successful compaction per collection
 }
@@ -67,14 +67,30 @@ func NewCompactor(dataDir string, interval time.Duration, opts ...CompactorOptio
 	return c
 }
 
-// Start begins the background compaction loop.
+// Start begins the background compaction loop. Idempotent — calling Start
+// on an already-running compactor is a no-op.
 func (c *Compactor) Start(compactFn func() error) {
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		return
+	}
+	c.running = true
+	c.mu.Unlock()
+
 	ctx, cancel := context.WithCancel(context.Background())
+	c.mu.Lock()
 	c.cancel = cancel
 	c.done = make(chan struct{})
+	c.mu.Unlock()
 
 	go func() {
-		defer close(c.done)
+		defer func() {
+			c.mu.Lock()
+			c.running = false
+			c.mu.Unlock()
+			close(c.done)
+		}()
 		ticker := time.NewTicker(c.interval)
 		defer ticker.Stop()
 
@@ -95,9 +111,14 @@ func (c *Compactor) Start(compactFn func() error) {
 
 // Stop halts the background compaction loop and waits for it to finish.
 func (c *Compactor) Stop() {
-	if c.cancel != nil {
-		c.cancel()
-		<-c.done
+	c.mu.Lock()
+	cancel := c.cancel
+	done := c.done
+	c.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+		<-done
 	}
 }
 
@@ -141,11 +162,9 @@ func CompactVectors(targetPath string, vectors []float32, dim int) error {
 		return fmt.Errorf("compaction: writing header placeholder: %w", err)
 	}
 
-	// Write vector data as raw float32 bytes
-	dataBuf := make([]byte, len(vectors)*4)
-	for i, v := range vectors {
-		binary.LittleEndian.PutUint32(dataBuf[i*4:], math.Float32bits(v))
-	}
+	// Write vector data as raw float32 bytes (zero-copy via unsafe.Slice)
+	dataLen := len(vectors) * 4
+	dataBuf := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(vectors))), dataLen)
 	if _, err := tmpFile.Write(dataBuf); err != nil {
 		return fmt.Errorf("compaction: writing vector data: %w", err)
 	}
