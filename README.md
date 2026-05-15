@@ -1,8 +1,14 @@
-# Magnitude VectorDB
+# Magnitude
 
-A lightweight, self-hosted vector database built in Go with a Python CLIP client for semantic image search.
+A fast, self-hosted vector database written in Go. Magnitude ships with a Python client designed for semantic image search using OpenAI's CLIP model.
 
-## Quick Start
+## Quickstart: Semantic Image Search
+
+This guide gets you up and running locally. The database runs directly on your machine—**Docker is completely optional.**
+
+### 1. Start the Server
+
+Boot up the VectorDB server. It starts on port `8080` with zero configuration required.
 
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
@@ -10,68 +16,68 @@ cd Magnitude
 make run
 ```
 
-That's it. The server starts on `http://localhost:8080` with sensible defaults — no config file, no certs, no setup required. Customize by editing `config.yaml` (optional).
+### 2. Prepare the Python Environment
 
-## Docker
-
-```bash
-docker compose up --build
-```
-
-## Features
-
-- **Pluggable Indexing** — Flat (brute-force), IVF, HNSW, SPANN
-- **Hybrid Search** — Dense vector + sparse BM25 text search with RRF fusion
-- **Multi-Tenancy** — Tenant → Database → Collection isolation with quotas
-- **Product Quantization** — Compress vectors for lower memory footprint
-- **Crash-Safe WAL** — SQLite-backed write-ahead log with configurable sync modes
-- **HNSW Snapshots** — Graph persisted to disk, fast restart without full WAL replay
-- **Distributed Cluster** — Consistent hashing, gossip protocol, failure detection, auto-migration
-- **Observability** — Prometheus metrics, pprof, structured JSON logging
-- **Production-Ready** — TLS, API key auth, rate limiting, graceful shutdown, config hot-reload
-
-## API
-
-### REST (curl)
-
-```bash
-# Create a collection
-curl -X POST http://localhost:8080/v1/collections \
-  -H "Content-Type: application/json" \
-  -d '{"name": "docs", "dimension": 128, "metric": "cosine", "index_type": "hnsw"}'
-
-# Insert vectors
-curl -X POST http://localhost:8080/v1/collections/{collection_id}/vectors \
-  -H "Content-Type: application/json" \
-  -d '{"ids": [1, 2], "vectors": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}'
-
-# Search
-curl -X POST http://localhost:8080/v1/collections/{collection_id}/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": [0.1, 0.2, ...], "k": 10}'
-```
-
-### Python Client
-
-Install the client:
+Open a new terminal window. Leave the Go server running.
 
 ```bash
 cd python-client
-pip install -e .
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[all]"
 ```
 
-Simple usage (v1 API — single-tenant):
+### 3. Download Sample Data (MS-COCO 5k)
+
+We'll use the COCO 2017 validation set, which contains exactly 5,000 images (approx 1GB).
+
+```bash
+wget http://images.cocodataset.org/zips/val2017.zip
+unzip val2017.zip -d ./images
+```
+
+### 4. Ingest Images
+
+The ingest script converts every image into a 512-dimensional vector using the CLIP model and loads them into Magnitude.
+
+```bash
+magnitude-ingest --dir ./images/val2017
+```
+
+### 5. Search
+
+Launch the interactive search interface:
+
+```bash
+magnitude-search
+```
+
+Type a query like `red car` or `dog catching a frisbee`. The client converts your text to a vector, searches the database, and opens the results in your web browser.
+
+---
+
+## Client Usage
+
+### Python Client
+
+The Python package provides a clean interface for programmatic access to the database.
 
 ```python
 from magnitude import VectorDBClient
 
-client = VectorDBClient()  # defaults to http://localhost:8080
-col = client.create_collection("docs", dimension=128, metric="cosine")
-client.insert(col.id, ids=[1, 2], vectors=[[0.1, ...], [0.3, ...]])
-results = client.search(col.id, query=[0.1, ...], top_k=5)
+# Connect to local server
+client = VectorDBClient("http://localhost:8080")
 
+# Create a collection
+col = client.create_collection("documents", dimension=128, metric="cosine")
+
+# Insert vectors
+client.insert("documents", ids=[1, 2], vectors=[[0.1, 0.2, ...], [0.3, 0.4, ...]])
+
+# Search
+results = client.search("documents", query=[0.1, 0.2, ...], top_k=5)
 for r in results:
-    print(f"  id={r.id}  score={r.score:.4f}")
+    print(f"ID: {r.id}, Score: {r.score}")
 ```
 
 ### Go Client
@@ -85,90 +91,36 @@ _ = c.Insert(ctx, col.ID, ids, vectors)
 results, _ := c.Search(ctx, col.ID, query, 10, 0)
 ```
 
-## Semantic Image Search (CLIP)
+---
 
-Magnitude ships with a CLIP-powered image search pipeline. It uses the `clip-ViT-B-32` model (512D vectors) to embed images and text queries into the same vector space.
+## Architecture & APIs
 
-```bash
-cd python-client
-pip install -e ".[all]"  # installs CLIP, torch, rich, tqdm
+Magnitude exposes two distinct REST APIs to support different deployment scales.
 
-# Index a folder of images
-magnitude-ingest --dir ./photos
+- **v1 API (`/v1/collections`)**: A flat structure. Best for simple applications, local development, and single-tenant use cases. This is what the Python and Go code snippets above use.
+- **v2 API (`/api/v2/tenants`)**: A strict `Tenant → Database → Collection` hierarchy. Designed for SaaS and enterprise deployments where strict data isolation is required. The `magnitude-ingest` CLI tool uses this internally to ensure image datasets are properly isolated.
 
-# Interactive search REPL — type natural language, get ranked images
-magnitude-search
-```
+For full system architecture and internal design, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-The ingest script uses the multi-tenant v2 API internally:
+---
 
-```python
-from vectordb_client import VectorDBClient
+## Deployment
 
-client = VectorDBClient()  # http://127.0.0.1:8080
-tenant_id = client.get_or_create_tenant("default")
-db_id = client.get_or_create_database(tenant_id, "images_db")
-col_id = client.get_or_create_collection(tenant_id, db_id, "clip_images", dimension=512)
+### Docker
 
-client.insert_vectors(tenant_id, db_id, col_id, ids=[1], vectors=[[...]])
-results = client.search_vectors(tenant_id, db_id, col_id, query_embedding=[...])
-```
-
-## API Reference
-
-### v1 — Simple (single-tenant)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/collections` | Create collection |
-| `GET` | `/v1/collections` | List collections |
-| `GET` | `/v1/collections/{id}` | Get collection |
-| `DELETE` | `/v1/collections/{id}` | Delete collection |
-| `POST` | `/v1/collections/{id}/vectors` | Insert vectors |
-| `POST` | `/v1/collections/{id}/search` | Search vectors |
-| `DELETE` | `/v1/collections/{id}/vectors/{vid}` | Delete vector |
-| `GET` | `/v1/health` | Health check |
-
-### v2 — Multi-tenant (tenant → database → collection)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/v2/tenants` | Create tenant |
-| `GET` | `/api/v2/tenants` | List tenants |
-| `POST` | `/api/v2/tenants/{t}/databases` | Create database |
-| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections` | Create collection |
-| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/add` | Insert vectors |
-| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/query` | Search |
-| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/hybrid` | Hybrid search |
-| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/delete` | Delete vector |
-
-## Configuration
-
-Edit `config.yaml` — all values have sensible defaults. Key settings:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `server.addr` | `:8080` | HTTP listen address |
-| `server.certFile` | `""` | TLS cert path (empty = plain HTTP) |
-| `index.type` | `flat` | Index type: `flat`, `ivf`, `hnsw`, `spann` |
-| `auth.keyHashes` | `[]` | API key SHA-256 hashes (empty = no auth) |
-| `cluster.enabled` | `false` | Enable distributed cluster mode |
-
-## Production Setup
-
-For production, enable TLS and API key authentication:
+If you prefer containerization, Magnitude includes a lightweight Docker setup.
 
 ```bash
-# 1. Generate TLS certs
-mkdir -p certs && openssl req -x509 -newkey rsa:4096 \
-  -keyout certs/server.key -out certs/server.crt \
-  -days 365 -nodes -subj '/CN=your-domain.com'
-
-# 2. Generate an API key hash
-echo -n "your-secret-api-key" | sha256sum
+docker compose up --build
 ```
 
-Then update `config.yaml`:
+### Production Configuration
+
+Edit `config.yaml` to secure the server before exposing it to the internet.
+
+1. **Enable TLS**: Generate certificates and add the paths to `certFile` and `keyFile`.
+2. **Enable Authentication**: Add SHA-256 hashes of your API keys to the `auth.keyHashes` list.
+
 ```yaml
 server:
   addr: ":8443"
@@ -176,13 +128,9 @@ server:
   keyFile: "certs/server.key"
 auth:
   keyHashes:
-    - "your-sha256-hash-here"
+    - "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
 ```
-
-## Architecture
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full system diagram.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT
