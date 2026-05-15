@@ -1,6 +1,9 @@
 """Interactive image search CLI for Magnitude."""
 
 import argparse
+import base64
+import json as json_module
+import mimetypes
 import os
 import sys
 import time
@@ -9,23 +12,44 @@ import webbrowser
 import html
 
 
+def _encode_image_data_uri(path: str) -> str:
+    """Encode a local image file as a base64 data URI for inline embedding."""
+    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
 def build_results_html(query: str, results: list, search_ms: float) -> str:
     """Build a self-contained HTML page showing search results as an image grid."""
     cards = ""
     for i, res in enumerate(results):
         score = res.score
-        distance = res.distance
         vid = res.id
         meta = res.metadata or {}
         path = meta.get("path", "")
         filename = meta.get("filename", os.path.basename(path) if path else "unknown")
 
-        img_src = f"file://{path}" if path and os.path.exists(path) else ""
+        # Use base64 data URIs so images load without a server (works in all browsers)
+        if path and os.path.exists(path):
+            try:
+                img_src = _encode_image_data_uri(path)
+            except (OSError, PermissionError):
+                img_src = ""
+        else:
+            img_src = ""
+
         score_pct = min(score * 100, 100)
 
+        # Safely escape for JavaScript context to prevent XSS.
+        # json.dumps produces a JS-safe string literal; html.escape converts the
+        # wrapping " to &quot; so it doesn't break the onclick attribute.
+        img_src_js = html.escape(json_module.dumps(img_src))
+        filename_js = html.escape(json_module.dumps(filename))
+
         cards += f"""
-        <div class="card" onclick="openModal('{img_src}', '{html.escape(filename)}', {score:.4f}, {vid})">
-            <img class="card-img" src="{img_src}" alt="{html.escape(filename)}" loading="lazy"/>
+        <div class="card" onclick="openModal({img_src_js}, {filename_js}, {score:.4f}, {vid})">
+            <img class="card-img" src="{html.escape(img_src, quote=True)}" alt="{html.escape(filename, quote=True)}" loading="lazy"/>
             <div class="card-overlay"><span class="card-rank">{i + 1}</span></div>
             <div class="card-body">
                 <p class="card-name">{html.escape(filename)}</p>

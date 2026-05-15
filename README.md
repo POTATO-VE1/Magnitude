@@ -1,94 +1,78 @@
 # Magnitude
 
-A fast, self-hosted vector database written in Go. Magnitude ships with a Python client designed for semantic image search using OpenAI's CLIP model.
+A fast, self-hosted vector database written in Go with a built-in Web UI for semantic image search.
 
-## Quickstart: Semantic Image Search
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 
-This guide gets you up and running locally. The database runs directly on your machine—**Docker is completely optional.**
+## Quickstart
 
-### 1. Start the Server
+### 1. Build and Run the Server
 
-Boot up the VectorDB server. It starts on port `8080` with zero configuration required.
-
-**Option A: Native**
+**Native (Go 1.25+):**
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
-make run
+make build
+make run    # Server starts on http://localhost:8080
 ```
 
-**Option B: Docker**
+**Docker:**
 ```bash
-git clone https://github.com/POTATO-VE1/Magnitude.git
-cd Magnitude
-docker compose up --build
+docker compose up --build -d
 ```
 
-### 2. Prepare the Python Environment
+### 2. Install the Client & UI
 
-Open a new terminal window. Leave the Go server running.
+Requires Python 3.9+. We use `--extra-index-url` to install CPU-only PyTorch to avoid massive GPU binaries.
 
 ```bash
 cd python-client
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
+pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
 pip install -e ".[all]"
 ```
 
-### 3. Download Sample Data (MS-COCO 5k)
+### 3. Ingest Images & Search
 
-We'll use the COCO 2017 validation set, which contains exactly 5,000 images (approx 1GB).
+Download a sample dataset (e.g., MS-COCO) and ingest it:
 
 ```bash
+# Download 5,000 sample images
 wget http://images.cocodataset.org/zips/val2017.zip
 unzip val2017.zip -d ./images
+
+# Ingest into VectorDB
+magnitude-ingest --dir ./images/val2017 --host http://localhost:8080
+
+# Start the Web UI
+magnitude-ui
 ```
-
-### 4. Ingest Images
-
-The ingest script converts every image into a 512-dimensional vector using the CLIP model and loads them into Magnitude.
-
-```bash
-magnitude-ingest --dir ./images/val2017
-```
-
-### 5. Search
-
-Launch the interactive search interface:
-
-```bash
-magnitude-search
-```
-
-Type a query like `red car` or `dog catching a frisbee`. The client converts your text to a vector, searches the database, and opens the results in your web browser.
+Open **http://localhost:3333** to search your images using text queries (e.g., "a red car").
 
 ---
 
 ## Client Usage
 
-### Python Client
-
-The Python package provides a clean interface for programmatic access to the database.
+### Python
 
 ```python
-from magnitude import VectorDBClient
+from magnitude import VectorDBClient, CLIPEmbedder
 
-# Connect to local server
+embedder = CLIPEmbedder()
 client = VectorDBClient("http://localhost:8080")
 
-# Create a collection
-col = client.create_collection("documents", dimension=128, metric="cosine")
+col = client.create_collection("my-images", dimension=512)
+vectors = embedder.embed_images(["cat.jpg", "dog.jpg"])
+client.insert(col.id, ids=[1, 2], vectors=vectors, metadata=[{"filename": "cat.jpg"}, {"filename": "dog.jpg"}])
 
-# Insert vectors
-client.insert("documents", ids=[1, 2], vectors=[[0.1, 0.2, ...], [0.3, 0.4, ...]])
-
-# Search
-results = client.search("documents", query=[0.1, 0.2, ...], top_k=5)
+results = client.search(col.id, query=embedder.embed_text("a cute cat"), top_k=5)
 for r in results:
-    print(f"ID: {r.id}, Score: {r.score}")
+    print(f"File: {r.metadata['filename']}, Score: {r.score:.4f}")
 ```
 
-### Go Client
+### Go
 
 ```go
 import "github.com/POTATO-VE1/Magnitude/pkg/client"
@@ -101,34 +85,11 @@ results, _ := c.Search(ctx, col.ID, query, 10, 0)
 
 ---
 
-## Architecture & APIs
+## Configuration & Production
 
-Magnitude exposes two distinct REST APIs to support different deployment scales.
+All settings are managed in `config.yaml`. Data is persisted in `./data`.
 
-- **v1 API (`/v1/collections`)**: A flat structure. Best for simple applications, local development, and single-tenant use cases. This is what the Python and Go code snippets above use.
-- **v2 API (`/api/v2/tenants`)**: A strict `Tenant → Database → Collection` hierarchy. Designed for SaaS and enterprise deployments where strict data isolation is required. The `magnitude-ingest` CLI tool uses this internally to ensure image datasets are properly isolated.
-
-For full system architecture and internal design, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
-
----
-
-## Deployment
-
-### Docker
-
-If you prefer containerization, Magnitude includes a lightweight Docker setup.
-
-```bash
-docker compose up --build
-```
-
-### Production Configuration
-
-Edit `config.yaml` to secure the server before exposing it to the internet.
-
-1. **Enable TLS**: Generate certificates and add the paths to `certFile` and `keyFile`.
-2. **Enable Authentication**: Add SHA-256 hashes of your API keys to the `auth.keyHashes` list.
-
+To secure for production, edit `config.yaml`:
 ```yaml
 server:
   addr: ":8443"
@@ -136,9 +97,10 @@ server:
   keyFile: "certs/server.key"
 auth:
   keyHashes:
-    - "a591a6d40bf420404a011733cfb7b190d62c65bf0bcda32b57b277d9ad9f146e"
+    - "<SHA-256 hash of your API key>"
 ```
 
-## License
+For distributed clustering, WAL internals, and indexing architecture, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
+## License
 MIT

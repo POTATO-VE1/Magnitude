@@ -279,6 +279,14 @@ type SearchVectorsRequest struct {
 	Filter map[string]any `json:"filter,omitempty"` // metadata filter (optional)
 }
 
+// APISearchResult extends the internal index.SearchResult with metadata.
+type APISearchResult struct {
+	ID       uint64         `json:"id"`
+	Distance float32        `json:"distance"`
+	Score    float32        `json:"score"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
 // SearchVectors handles POST /v1/collections/{id}/search.
 func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
@@ -303,7 +311,23 @@ func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, Envelope{Data: results})
+	var vIDs []uint64
+	for _, r := range results {
+		vIDs = append(vIDs, r.ID)
+	}
+	batchMeta, _ := h.manager.SysDB().LoadVectorMetadataBatch(id, vIDs)
+
+	apiResults := make([]APISearchResult, len(results))
+	for i, r := range results {
+		apiResults[i] = APISearchResult{
+			ID:       r.ID,
+			Distance: r.Distance,
+			Score:    r.Score,
+			Metadata: batchMeta[r.ID],
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: apiResults})
 }
 
 // DeleteVector handles DELETE /v1/collections/{id}/vectors/{vectorId}.

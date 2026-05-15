@@ -208,6 +208,11 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 		return nil, fmt.Errorf("collection: creating index for %q: %w", name, err)
 	}
 
+	// Set snapshot path for newly created HNSW indexes
+	if hnswIdx, ok := idx.(*hnsw.HNSWIndex); ok && m.dataDir != "" {
+		hnswIdx.SetSnapshotPath(m.snapshotPath(meta.ID))
+	}
+
 	m.mu.Lock()
 	m.collections[meta.ID] = &Collection{
 		meta:          meta,
@@ -255,6 +260,11 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 	if err != nil {
 		m.sysdb.DeleteCollectionScoped(tenantID, meta.ID)
 		return nil, fmt.Errorf("collection: creating index for %q: %w", name, err)
+	}
+
+	// Set snapshot path for newly created HNSW indexes
+	if hnswIdx, ok := idx.(*hnsw.HNSWIndex); ok && m.dataDir != "" {
+		hnswIdx.SetSnapshotPath(m.snapshotPath(meta.ID))
 	}
 
 	m.mu.Lock()
@@ -463,6 +473,11 @@ func (m *Manager) CreateCollectionRemote(name string, dim int, metric, indexType
 	if err != nil {
 		m.sysdb.DeleteCollection(meta.ID)
 		return fmt.Errorf("collection: remote create index for %q: %w", name, err)
+	}
+
+	// Set snapshot path for newly created HNSW indexes
+	if hnswIdx, ok := idx.(*hnsw.HNSWIndex); ok && m.dataDir != "" {
+		hnswIdx.SetSnapshotPath(m.snapshotPath(meta.ID))
 	}
 
 	m.mu.Lock()

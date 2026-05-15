@@ -148,6 +148,22 @@ class VectorDBClient:
         Raises:
             CollectionNotFoundError: If not found.
         """
+        import uuid
+        is_uuid = False
+        try:
+            uuid.UUID(name_or_id)
+            is_uuid = True
+        except ValueError:
+            pass
+
+        if not is_uuid:
+            # Look up by name
+            cols = self.list_collections()
+            for c in cols:
+                if c.name == name_or_id:
+                    return c
+            raise CollectionNotFoundError(f"Collection {name_or_id!r} not found")
+
         try:
             data = self._get(f"/v1/collections/{name_or_id}")
             return Collection(

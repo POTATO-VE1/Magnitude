@@ -14,13 +14,23 @@ certs/
 
 # ── Python virtual environment ──
 python-client/venv/
+python-client/.venv/
 
 # ── Downloaded image datasets (too large for git) ──
 python-client/images/
+test_images/
 
-# ── Python bytecode ──
+# ── Python bytecode & build artifacts ──
 __pycache__/
 *.pyc
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ── Python constraints (generated, machine-specific) ──
+python-client/constraints-cpu.txt
 
 # ── OS junk ──
 .DS_Store
@@ -30,11 +40,16 @@ Thumbs.db
 .vscode/
 .idea/
 
-# ── Logs and temp files ──
+# ── Logs, PID files, and temp files ──
 *.log
+*.pid
 *.tmp
 *.swp
 *.bak
+nohup.out
+
+# ── Debug / scratch output ──
+search_result.json
 
 # ── AI Generated Files ──
 TIER3_IMPLEMENTATION_PLAN.md

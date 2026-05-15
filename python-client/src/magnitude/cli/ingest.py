@@ -115,7 +115,7 @@ def main() -> None:
 
         if valid_vecs:
             try:
-                client.insert(args.collection, valid_ids, valid_vecs, valid_meta)
+                client.insert(col.id, valid_ids, valid_vecs, valid_meta)
                 inserted += len(valid_vecs)
             except Exception as e:
                 failed += len(valid_vecs)

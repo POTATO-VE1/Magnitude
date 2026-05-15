@@ -26,21 +26,25 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "requests>=2.28.0",
+    "requests>=2.31.0",
 ]
 
 [project.optional-dependencies]
 embed = [
-    "sentence-transformers>=2.2.0",
     "torch>=2.0.0",
-    "Pillow>=9.0.0",
+    "sentence-transformers>=2.5.1",
+    "Pillow>=10.2.0",
 ]
 cli = [
-    "rich>=13.0.0",
-    "tqdm>=4.60.0",
+    "rich>=13.7.0",
+    "tqdm>=4.66.2",
+]
+ui = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
 ]
 all = [
-    "magnitude-client[embed,cli]",
+    "magnitude-client[embed,cli,ui]",
 ]
 
 [project.urls]
@@ -51,6 +55,7 @@ Issues = "https://github.com/POTATO-VE1/Magnitude/issues"
 [project.scripts]
 magnitude-ingest = "magnitude.cli.ingest:main"
 magnitude-search = "magnitude.cli.search:main"
+magnitude-ui = "magnitude.cli.ui:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/magnitude"]

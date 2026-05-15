@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Magnitude</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Neo-brutalist monospace font -->
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="top-bar">
+        <div class="logo">MAGNITUDE <span class="version">v1.0</span></div>
+        <div class="controls">
+            <select id="collection-select" class="collection-select">
+                <option value="">Loading datasets...</option>
+            </select>
+            <div class="status">[db:on] <span id="res-count">0</span> results</div>
+        </div>
+    </header>
+
+    <main>
+        <div class="search-container">
+            <h1 class="title">Magnitude</h1>
+            <p class="subtitle">semantic image search via CLIP</p>
+            <div class="input-wrapper">
+                <span class="prompt">$</span>
+                <input type="text" id="search-input" placeholder="search for an image..." autocomplete="off" autofocus>
+            </div>
+            
+            <div class="latency-info" id="latency-info" style="display: none;">
+                <span class="pulse"></span> 
+                <span>AI Embed: <span id="embed-time">0</span>ms</span>
+                <span class="divider">|</span>
+                <span>DB Search: <span id="search-time">0</span>ms</span>
+            </div>
+        </div>
+
+        <div class="results-grid" id="results-grid">
+            <!-- Cards will be injected here by app.js -->
+        </div>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
