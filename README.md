@@ -7,10 +7,10 @@ A lightweight, self-hosted vector database built in Go with a Python CLIP client
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
-go run cmd/server/main.go
+make run
 ```
 
-That's it. The server starts on `http://localhost:8080` with no configuration needed.
+That's it. The server starts on `http://localhost:8080` with sensible defaults — no config file, no certs, no setup required. Customize by editing `config.yaml` (optional).
 
 ### Python Client
 

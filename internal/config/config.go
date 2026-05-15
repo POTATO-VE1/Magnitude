@@ -244,10 +244,10 @@ type MigrationConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Addr:              ":8443",
+			Addr:              ":8080",
 			InternalPort:      ":9090",
-			CertFile:          "certs/server.crt",
-			KeyFile:           "certs/server.key",
+			CertFile:          "",
+			KeyFile:           "",
 			ReadTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,
 			WriteTimeout:      30 * time.Second,
@@ -330,6 +330,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// No config file — use built-in defaults. This enables zero-config startup.
+			return cfg, nil
+		}
 		return nil, fmt.Errorf("config: reading %q: %w", path, err)
 	}
 
