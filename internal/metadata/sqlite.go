@@ -75,8 +75,8 @@ type SysDB struct {
 
 	// tombstoneSet is an in-memory cache of deleted vector IDs per collection.
 	// Consulted during search to filter out deleted vectors without hitting SQLite.
-	tombstones     map[string]map[uint64]struct{} // collection_id → set of deleted vector IDs
-	tombstoneMu    sync.RWMutex
+	tombstones  map[string]map[uint64]struct{} // collection_id → set of deleted vector IDs
+	tombstoneMu sync.RWMutex
 }
 
 // NewSysDB opens or creates a SysDB at the given path.
@@ -284,6 +284,10 @@ func (s *SysDB) GetCollectionScoped(tenantID, collectionID string) (*Collection,
 }
 
 // GetCollectionByName retrieves a collection by name (searches globally).
+// GetCollectionByName retrieves a collection by name across all tenants.
+// WARNING: This returns the first match and is non-deterministic when
+// multiple tenants have collections with the same name. Use for internal
+// operations only (gossip, migration). API handlers must use scoped variants.
 func (s *SysDB) GetCollectionByName(name string) (*Collection, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -298,6 +302,26 @@ func (s *SysDB) GetCollectionByName(name string) (*Collection, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("metadata: getting collection by name %q: %w", name, err)
+	}
+	return &c, nil
+}
+
+// GetCollectionByNameAndTenant retrieves a collection by name scoped to a specific tenant.
+// This is the safe variant for multi-tenant operations.
+func (s *SysDB) GetCollectionByNameAndTenant(tenantID, name string) (*Collection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var c Collection
+	err := s.db.QueryRow(
+		`SELECT id, tenant_id, database_id, name, dimension, metric, index_type, vector_count, created_at
+		 FROM collections WHERE tenant_id = ? AND name = ?`, tenantID, name,
+	).Scan(&c.ID, &c.TenantID, &c.DatabaseID, &c.Name, &c.Dimension, &c.Metric, &c.IndexType, &c.VectorCount, &c.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("metadata: getting collection by name %q (tenant %s): %w", name, tenantID, err)
 	}
 	return &c, nil
 }
@@ -498,7 +522,6 @@ func (s *SysDB) LoadVectorMetadata(collectionID string, vectorID uint64) (map[st
 		return nil, fmt.Errorf("metadata: loading vector metadata: %w", err)
 	}
 	defer rows.Close()
-
 	result := make(map[string]any)
 	for rows.Next() {
 		var key, value string
@@ -506,6 +529,47 @@ func (s *SysDB) LoadVectorMetadata(collectionID string, vectorID uint64) (map[st
 			return nil, fmt.Errorf("metadata: scanning vector metadata: %w", err)
 		}
 		result[key] = value
+	}
+	return result, rows.Err()
+}
+
+// LoadVectorMetadataBatch loads metadata for multiple vectors.
+func (s *SysDB) LoadVectorMetadataBatch(collectionID string, vectorIDs []uint64) (map[uint64]map[string]any, error) {
+	if len(vectorIDs) == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	query := "SELECT vector_id, meta_key, meta_value FROM vector_metadata WHERE collection_id = ? AND vector_id IN ("
+	args := make([]interface{}, len(vectorIDs)+1)
+	args[0] = collectionID
+	for i, id := range vectorIDs {
+		if i > 0 {
+			query += ","
+		}
+		query += "?"
+		args[i+1] = id
+	}
+	query += ")"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("metadata: loading vector metadata batch: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uint64]map[string]any)
+	for rows.Next() {
+		var vid uint64
+		var key, value string
+		if err := rows.Scan(&vid, &key, &value); err != nil {
+			return nil, fmt.Errorf("metadata: scanning vector metadata batch: %w", err)
+		}
+		if result[vid] == nil {
+			result[vid] = make(map[string]any)
+		}
+		result[vid][key] = value
 	}
 	return result, rows.Err()
 }

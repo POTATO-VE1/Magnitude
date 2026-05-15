@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/POTATO-VE1/Magnitude/internal/errors"
 	_ "modernc.org/sqlite"
 )
 
@@ -291,9 +292,29 @@ func (w *SQLiteWAL) AppendBatch(ops []WALOp) ([]uint64, error) {
 }
 
 // ReadFrom returns all WAL entries with seqID > afterSeq.
+// Used by the Query Executor to merge recent writes with the index.
+//
+// If the WAL has been truncated past afterSeq, returns a
+// ErrWALTruncation error so callers can detect and handle data loss
+// rather than silently returning an incomplete result set.
 func (w *SQLiteWAL) ReadFrom(afterSeq uint64) ([]WALEntry, error) {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+
+	// Detect truncation: if the minimum seq_id in the WAL is greater
+	// than afterSeq, entries the caller expected have been removed.
+	// Only checks when afterSeq > 0, since a fresh WAL starts at seq_id=1.
+	var minSeqID sql.NullInt64
+	if afterSeq > 0 {
+		if err := w.db.QueryRow("SELECT MIN(seq_id) FROM wal_entries").Scan(&minSeqID); err != nil {
+			return nil, fmt.Errorf("wal: reading min seq id: %w", err)
+		}
+		if minSeqID.Valid && uint64(minSeqID.Int64) > afterSeq {
+			return nil, fmt.Errorf("%w: requested seq %d but WAL minimum is %d",
+				errors.New(errors.ErrWALTruncation, "WAL truncation detected", nil),
+				afterSeq, minSeqID.Int64)
+		}
+	}
 
 	rows, err := w.db.Query(
 		"SELECT seq_id, op_type, collection_id, vector_id, vector_data, document FROM wal_entries WHERE seq_id > ? ORDER BY seq_id",
@@ -339,11 +360,11 @@ func (w *SQLiteWAL) GetMaxSeqID() (uint64, error) {
 	if err != nil && err != sql.ErrNoRows {
 		return 0, fmt.Errorf("wal: getting max seq id: %w", err)
 	}
-	
+
 	if !maxSeqID.Valid {
 		return 0, nil
 	}
-	
+
 	return uint64(maxSeqID.Int64), nil
 }
 

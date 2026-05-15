@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"os"
@@ -14,12 +15,18 @@ import (
 
 var snapshotMagic = [4]byte{'H', 'S', 'N', 'P'}
 
-const snapshotVersion uint32 = 1
+const snapshotVersion uint32 = 2 // v2: added Endianness field for arch-portable snapshots
 
-const snapshotHeaderSize = 64
+const snapshotHeaderSize = 78 // updated: includes Endianness (uint16)
+
+// Endianness sentinel values for cross-architecture detection.
+const (
+	endianLittle uint16 = 0x0001
+	endianBig    uint16 = 0x0000
+)
 
 // SnapshotHeader is the on-disk header for HNSW snapshot files.
-// Total size: 64 bytes (fixed, padded for alignment).
+// Total size: 78 bytes (fixed, no padding — binary.Write is sequential).
 type SnapshotHeader struct {
 	Magic      [4]byte  // "HSNP"
 	Version    uint32   // file format version
@@ -29,6 +36,7 @@ type SnapshotHeader struct {
 	MaxLevel   int32    // current max level
 	EntryPoint int64    // entry point node index (-1 if empty)
 	SeqID      uint64   // WAL seqID at snapshot time
+	Endianness uint16   // 0x0001 = little-endian; rejects cross-arch loads
 	Checksum   [32]byte // SHA-256 of data section
 }
 
@@ -84,6 +92,7 @@ func (h *HNSWIndex) SnapshotToFile(path string, seqID uint64) error {
 		MaxLevel:   int32(h.maxLevel),
 		EntryPoint: int64(h.entryPoint),
 		SeqID:      seqID,
+		Endianness: endianLittle,
 		Checksum:   checksum,
 	}
 
@@ -129,6 +138,16 @@ func (h *HNSWIndex) SnapshotToFile(path string, seqID uint64) error {
 		return fmt.Errorf("hnsw snapshot: atomic rename: %w", err)
 	}
 
+	// Fsync directory to ensure rename is durably recorded.
+	// Without this, a crash immediately after rename could lose the directory
+	// entry on filesystems with delayed allocation (ext4, XFS).
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		_ = dirFile.Close()
+	} else {
+		slog.Warn("hnsw snapshot: failed to open directory for fsync", "dir", dir, "error", err)
+	}
+
 	return nil
 }
 
@@ -154,6 +173,11 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 	}
 	if hdr.Version != snapshotVersion {
 		return nil, 0, fmt.Errorf("hnsw snapshot: unsupported version %d", hdr.Version)
+	}
+
+	// Verify endianness matches the current architecture
+	if hdr.Endianness != endianLittle {
+		return nil, 0, fmt.Errorf("hnsw snapshot: endianness mismatch (file=0x%04x, host=0x%04x) — snapshot created on a different architecture", hdr.Endianness, endianLittle)
 	}
 
 	dataBytes := raw[snapshotHeaderSize:]

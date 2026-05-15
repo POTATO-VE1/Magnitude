@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -27,10 +28,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/POTATO-VE1/Magnitude/internal/api"
+	"github.com/POTATO-VE1/Magnitude/internal/cluster"
 	"github.com/POTATO-VE1/Magnitude/internal/collection"
 	"github.com/POTATO-VE1/Magnitude/internal/config"
 	"github.com/POTATO-VE1/Magnitude/internal/events"
+	"github.com/POTATO-VE1/Magnitude/internal/failure"
+	"github.com/POTATO-VE1/Magnitude/internal/gossip"
 	"github.com/POTATO-VE1/Magnitude/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/migration"
+	"github.com/POTATO-VE1/Magnitude/internal/routing"
 	"github.com/POTATO-VE1/Magnitude/internal/storage"
 )
 
@@ -62,6 +68,15 @@ func main() {
 		"index_type", cfg.Index.Type,
 		"data_dir", cfg.Storage.DataDir,
 	)
+
+	// Security warnings
+	if len(cfg.Auth.KeyHashes) == 0 {
+		slog.Warn("SECURITY: auth.keyHashes is empty — authentication is DISABLED")
+		slog.Warn("All requests will be accepted without credential verification")
+		if cfg.Server.Addr != ":8443" && cfg.Server.Addr != ":443" {
+			slog.Warn("Server is not bound to a standard HTTPS port — ensure this is intentional")
+		}
+	}
 
 	// ── 4. Configure Go runtime ───────────────────────────────────────────────
 	// SetGCPercent controls when the GC triggers relative to live heap size.
@@ -140,6 +155,166 @@ func main() {
 		os.Exit(1)
 	}
 
+	// ── 8.5 Initialize Gossip, Failure Detector, and Hash Ring (Tier 3) ───
+	var failDetector *failure.Detector
+	var gossipProto *gossip.Protocol
+	var hashRing *cluster.HashRing
+	var rt *routing.Router
+	var fwd *routing.Forwarder
+
+	if cfg.Cluster.Enabled {
+		// Require gossip secret key in cluster mode to prevent unauthorized membership manipulation
+		if cfg.Gossip.SecretKey == "" {
+			slog.Error("SECURITY: gossip.secretKey is required when cluster is enabled")
+			slog.Error("Generate a key: openssl rand -hex 32")
+			os.Exit(1)
+		}
+
+		hashRing = cluster.NewHashRing(cfg.Cluster.VirtualNodes)
+		// Add self to hash ring
+		hashRing.AddNode(cfg.Cluster.NodeID)
+
+		// Migration worker for data rebalancing
+		migWorker := migration.NewWorker(migration.Config{
+			BatchSize:   cfg.Migration.BatchSize,
+			Parallelism: cfg.Migration.Parallelism,
+			MaxRetries:  cfg.Migration.MaxRetries,
+		})
+
+		failCfg := failure.Config{
+			Interval:     cfg.Failure.Interval,
+			Timeout:      cfg.Failure.Timeout,
+			SuspectAfter: cfg.Failure.SuspectAfter,
+			DeadAfter:    cfg.Failure.DeadAfter,
+			OnNodeSuspect: func(nodeID string) {
+				slog.Warn("node suspect", "node_id", nodeID)
+			},
+			OnNodeDead: func(nodeID string) {
+				slog.Warn("node declared dead, triggering migration", "node_id", nodeID)
+
+				// Trigger migration for collections owned by the dead node.
+				// TriggerOnNodeRemoval handles ring removal internally:
+				// it snapshots ownership first, then removes the dead node.
+				cols, _ := mgr.ListCollections()
+				colIDs := make([]string, 0, len(cols))
+				for _, c := range cols {
+					colIDs = append(colIDs, c.ID)
+				}
+				plans := migration.TriggerOnNodeRemoval(hashRing, nodeID, colIDs, cfg.Cluster.ReplicationFactor)
+				for _, plan := range plans {
+					go func(p migration.MigrationPlan) {
+						// Build a vector source from the collection's exported vectors
+						source := func() ([]uint64, error) {
+							// In production, this would fetch from the source node
+							// For now, return nil (no vectors to migrate in single-node test)
+							return nil, nil
+						}
+						if err := migWorker.ExecutePlan(p, source, func(batch []uint64) error {
+							// Transfer function — forward to target node
+							slog.Info("migration: transferring batch", "plan", p.ID, "vectors", len(batch))
+							return nil
+						}); err != nil {
+							slog.Error("migration failed", "plan", p.ID, "error", err)
+						}
+					}(plan)
+				}
+			},
+		}
+		failDetector = failure.New(failCfg)
+
+		// Gossip callback triggers failure detector and updates hash ring
+		gossipCb := func(msg gossip.Message) {
+			failDetector.RecordHeartbeat(msg.Source)
+			switch msg.Event {
+			case gossip.EventAlive:
+				var addrPayload struct {
+					API string `json:"api"`
+				}
+				apiAddr := string(msg.Payload) // fallback: raw payload
+				if err := json.Unmarshal(msg.Payload, &addrPayload); err == nil && addrPayload.API != "" {
+					apiAddr = addrPayload.API
+				}
+				failDetector.AddNode(msg.Source, apiAddr)
+				hashRing.AddNode(msg.Source)
+			case gossip.EventDead:
+				failDetector.RemoveNode(msg.Source)
+				hashRing.RemoveNode(msg.Source)
+			case gossip.EventCreateCollection:
+				var p struct {
+					Name      string `json:"name"`
+					Dim       int    `json:"dim"`
+					Metric    string `json:"metric"`
+					IndexType string `json:"index_type"`
+				}
+				if err := json.Unmarshal(msg.Payload, &p); err != nil {
+					slog.Warn("gossip: invalid CreateCollection payload", "error", err)
+					return
+				}
+				if err := mgr.CreateCollectionRemote(p.Name, p.Dim, p.Metric, p.IndexType); err != nil {
+					slog.Warn("gossip: remote create collection failed", "name", p.Name, "error", err)
+				}
+			case gossip.EventDropCollection:
+				var p struct {
+					Name string `json:"name"`
+				}
+				if err := json.Unmarshal(msg.Payload, &p); err != nil {
+					slog.Warn("gossip: invalid DropCollection payload", "error", err)
+					return
+				}
+				if err := mgr.DeleteCollectionRemote(p.Name); err != nil {
+					slog.Warn("gossip: remote delete collection failed", "name", p.Name, "error", err)
+				}
+			}
+		}
+
+		gossipCfg := gossip.Config{
+			Port:          cfg.Gossip.Port,
+			Fanout:        cfg.Gossip.Fanout,
+			MaxSeen:       cfg.Gossip.MaxSeen,
+			SeenExpiry:    cfg.Gossip.SeenExpiry,
+			ProbeInterval: cfg.Gossip.ProbeInterval,
+		}
+		gossipProto = gossip.New(cfg.Cluster.NodeID, gossipCfg, gossipCb)
+
+		// Load seed nodes to bootstrap the cluster
+		if len(cfg.Cluster.SeedNodes) > 0 {
+			gossipProto.SetPeers(cfg.Cluster.SeedNodes)
+			slog.Info("cluster seed nodes configured", "count", len(cfg.Cluster.SeedNodes))
+		}
+
+		if err := gossipProto.StartUDP(cfg.Gossip.SecretKey); err != nil {
+			slog.Error("failed to start gossip server", "error", err)
+			os.Exit(1)
+		}
+		failDetector.Start()
+
+		// Broadcast Alive
+		payload, _ := json.Marshal(map[string]string{"api": cfg.Server.Addr})
+		gossipProto.Broadcast(gossip.EventAlive, payload)
+
+		// Wire gossip broadcaster into collection manager for cluster-wide event dissemination
+		mgr.SetGossipBroadcaster(func(event collection.GossipEventKind, payload []byte) {
+			var gossipEvent gossip.EventKind
+			switch event {
+			case collection.GossipEventCreateCollection:
+				gossipEvent = gossip.EventCreateCollection
+			case collection.GossipEventDropCollection:
+				gossipEvent = gossip.EventDropCollection
+			default:
+				return
+			}
+			gossipProto.Broadcast(gossipEvent, payload)
+		})
+
+		// Initialize HTTP Routing components
+		fwd = routing.NewForwarder(cfg)
+		rt = routing.NewRouter(hashRing, cfg.Cluster.NodeID, cfg.Server.Addr, failDetector)
+
+		slog.Info("cluster mode enabled", "node_id", cfg.Cluster.NodeID)
+	} else {
+		slog.Info("cluster mode disabled, running as standalone node")
+	}
+
 	// ── 9. Start internal server (metrics + pprof) ──────────────────────────
 	// Runs on localhost-only port. Never exposed to the internet.
 	// pprof is registered via the _ "net/http/pprof" import above.
@@ -159,7 +334,7 @@ func main() {
 	}()
 
 	// ── 10. Wire up public HTTP server ──────────────────────────────────────
-	router := api.NewRouter(cfg, mgr)
+	router := api.NewRouter(cfg, mgr, rt, fwd)
 	server := &http.Server{
 		Addr:              cfg.Server.Addr,
 		Handler:           router,
@@ -237,6 +412,14 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
 	shutdownStart := time.Now()
+
+	// Broadcast Dead to cluster peers
+	if cfg.Cluster.Enabled && gossipProto != nil && failDetector != nil {
+		gossipProto.Broadcast(gossip.EventDead, nil)
+		time.Sleep(50 * time.Millisecond) // Let packet escape
+		gossipProto.StopUDP()
+		failDetector.Stop()
+	}
 
 	// Step 1+2: Stop accepting + drain in-flight
 	slog.Info("shutdown step 1/6: draining HTTP connections...")

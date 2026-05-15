@@ -19,6 +19,8 @@ import (
 
 	"github.com/POTATO-VE1/Magnitude/internal/collection"
 	"github.com/POTATO-VE1/Magnitude/internal/config"
+	"github.com/POTATO-VE1/Magnitude/internal/metadata"
+	"github.com/POTATO-VE1/Magnitude/internal/routing"
 	"github.com/POTATO-VE1/Magnitude/internal/security"
 )
 
@@ -30,12 +32,14 @@ type Envelope struct {
 
 // Handler holds dependencies for HTTP handlers.
 type Handler struct {
-	manager *collection.Manager
-	config  *config.Config
+	manager   *collection.Manager
+	config    *config.Config
+	router    *routing.Router
+	forwarder *routing.Forwarder
 }
 
 // NewRouter creates and configures the chi router with all routes and middleware.
-func NewRouter(cfg *config.Config, mgr *collection.Manager) *chi.Mux {
+func NewRouter(cfg *config.Config, mgr *collection.Manager, rt *routing.Router, fwd *routing.Forwarder) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Build middleware dependencies
@@ -52,7 +56,12 @@ func NewRouter(cfg *config.Config, mgr *collection.Manager) *chi.Mux {
 	r.Use(tenantRateLimiter.Middleware)
 	r.Use(MaxBodySize(4 * 1024 * 1024)) // 4 MiB max body
 
-	h := &Handler{manager: mgr, config: cfg}
+	h := &Handler{
+		manager:   mgr,
+		config:    cfg,
+		router:    rt,
+		forwarder: fwd,
+	}
 
 	// Health check (no auth required — move before auth middleware if needed)
 	r.Get("/v1/health", h.HealthCheck)
@@ -70,6 +79,14 @@ func NewRouter(cfg *config.Config, mgr *collection.Manager) *chi.Mux {
 
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", promhttp.Handler())
+
+	// Cluster metadata endpoint (for client-side hash ring sync)
+	r.Get("/v1/cluster/metadata", h.ClusterMetadata)
+
+	// Inter-node replicate endpoints (internal RPC)
+	r.Post("/internal/v1/replicate/insert", h.ReplicateInsert)
+	r.Post("/internal/v1/replicate/search", h.ReplicateSearch)
+	r.Post("/internal/v1/replicate/delete", h.ReplicateDelete)
 
 	// v2 API: tenant-scoped routes (Phase 8 multi-tenancy)
 	RegisterV2PublicRoutes(r, h)
@@ -132,7 +149,15 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 		req.IndexType = h.config.Index.Type
 	}
 
-	col, err := h.manager.CreateCollection(req.Name, req.Dimension, req.Metric, req.IndexType)
+	// Tenant isolation: if auth is active, scope to the authenticated tenant
+	tenantID := security.TenantID(r.Context())
+	var col *metadata.Collection
+	var err error
+	if tenantID != "" {
+		col, err = h.manager.CreateCollectionScoped(tenantID, "", req.Name, req.Dimension, req.Metric, req.IndexType)
+	} else {
+		col, err = h.manager.CreateCollection(req.Name, req.Dimension, req.Metric, req.IndexType)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusConflict, Envelope{Error: err.Error()})
 		return
@@ -143,7 +168,14 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 
 // ListCollections handles GET /v1/collections.
 func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
-	cols, err := h.manager.ListCollections()
+	tenantID := security.TenantID(r.Context())
+	var cols []*metadata.Collection
+	var err error
+	if tenantID != "" {
+		cols, err = h.manager.ListCollectionsForTenant(tenantID)
+	} else {
+		cols, err = h.manager.ListCollections()
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
 		return
@@ -154,8 +186,15 @@ func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
 // GetCollection handles GET /v1/collections/{id}.
 func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	tenantID := security.TenantID(r.Context())
 
-	col, err := h.manager.GetCollection(id)
+	var col *metadata.Collection
+	var err error
+	if tenantID != "" {
+		col, err = h.manager.GetCollectionScoped(tenantID, id)
+	} else {
+		col, err = h.manager.GetCollection(id)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
 		return
@@ -170,8 +209,15 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 // DeleteCollection handles DELETE /v1/collections/{id}.
 func (h *Handler) DeleteCollection(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	tenantID := security.TenantID(r.Context())
 
-	if err := h.manager.DeleteCollection(id); err != nil {
+	var err error
+	if tenantID != "" {
+		err = h.manager.DeleteCollectionScoped(tenantID, id)
+	} else {
+		err = h.manager.DeleteCollection(id)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
 		return
 	}
@@ -277,6 +323,127 @@ func (h *Handler) DeleteVector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, Envelope{Data: map[string]uint64{"deleted": vecID}})
+}
+
+// ── Cluster Metadata Handler ─────────────────────────────────────────────────
+
+// ClusterMetadataResponse is the response for GET /v1/cluster/metadata.
+type ClusterMetadataResponse struct {
+	Nodes    []NodeMetadata    `json:"nodes"`
+	ShardMap map[string]string `json:"shard_map"`
+}
+
+// NodeMetadata describes a cluster node for client discovery.
+type NodeMetadata struct {
+	ID         string `json:"id"`
+	Address    string `json:"address"`
+	APIAddress string `json:"api_address"`
+	State      string `json:"state"`
+}
+
+// ClusterMetadata handles GET /v1/cluster/metadata.
+// Returns the list of known nodes and the shard map for client-side routing.
+func (h *Handler) ClusterMetadata(w http.ResponseWriter, r *http.Request) {
+	if h.router == nil {
+		writeJSON(w, http.StatusOK, Envelope{Data: ClusterMetadataResponse{
+			Nodes:    []NodeMetadata{},
+			ShardMap: map[string]string{},
+		}})
+		return
+	}
+
+	nodes := h.router.GetAllNodes()
+	nodeMeta := make([]NodeMetadata, 0, len(nodes))
+	for _, nodeID := range nodes {
+		addr := h.router.GetAddress(nodeID)
+		nodeMeta = append(nodeMeta, NodeMetadata{
+			ID:         nodeID,
+			APIAddress: addr,
+			State:      "alive",
+		})
+	}
+
+	// Build shard map from all collections
+	cols, _ := h.manager.ListCollections()
+	shardMap := make(map[string]string, len(cols))
+	if cols != nil {
+		for _, col := range cols {
+			shardMap[col.ID] = h.router.GetNodeForVector(col.ID, 0)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: ClusterMetadataResponse{
+		Nodes:    nodeMeta,
+		ShardMap: shardMap,
+	}})
+}
+
+// ── Replicate Handlers (inter-node RPC) ─────────────────────────────────────
+
+// ReplicateInsert handles POST /internal/v1/replicate/insert.
+// Receives an insert request from a peer node and applies it locally.
+func (h *Handler) ReplicateInsert(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CollectionID string           `json:"collection_id"`
+		IDs          []uint64         `json:"ids"`
+		Vectors      [][]float32      `json:"vectors"`
+		Metadata     []map[string]any `json:"metadata,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
+		return
+	}
+
+	if err := h.manager.InsertVectors(r.Context(), req.CollectionID, req.IDs, req.Vectors, req.Metadata); err != nil {
+		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: map[string]int{"inserted": len(req.IDs)}})
+}
+
+// ReplicateSearch handles POST /internal/v1/replicate/search.
+// Receives a search request from a peer node and searches locally.
+func (h *Handler) ReplicateSearch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CollectionID string         `json:"collection_id"`
+		Query        []float32      `json:"query"`
+		K            int            `json:"k"`
+		Nprobe       int            `json:"nprobe"`
+		Filter       map[string]any `json:"filter,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
+		return
+	}
+
+	results, err := h.manager.SearchVectors(r.Context(), req.CollectionID, req.Query, req.K, req.Nprobe, req.Filter)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: results})
+}
+
+// ReplicateDelete handles POST /internal/v1/replicate/delete.
+// Receives a delete request from a peer node and applies it locally.
+func (h *Handler) ReplicateDelete(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CollectionID string `json:"collection_id"`
+		VectorID     uint64 `json:"vector_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
+		return
+	}
+
+	if err := h.manager.DeleteVector(r.Context(), req.CollectionID, req.VectorID); err != nil {
+		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: map[string]uint64{"deleted": req.VectorID}})
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

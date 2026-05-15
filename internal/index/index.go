@@ -55,3 +55,21 @@ type SearchResult struct {
 	// For L2: Score = 1 / (1 + Distance) (higher = more similar).
 	Score float32
 }
+
+// VectorExporter is an optional interface that index implementations can
+// satisfy to support vector enumeration for migration. This does NOT
+// modify the frozen Index interface — it is checked via type assertion:
+//
+//	if exporter, ok := idx.(index.VectorExporter); ok { ... }
+type VectorExporter interface {
+	// ExportVectors returns all live (non-deleted) vectors in the index.
+	// Used by the migration engine to stream vectors to a target node.
+	ExportVectors() []ExportedVector
+}
+
+// ExportedVector is a vector with its ID, suitable for migration transfer.
+type ExportedVector struct {
+	ID     uint64
+	Vector []float32
+}
+

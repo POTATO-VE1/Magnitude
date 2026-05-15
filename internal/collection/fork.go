@@ -35,9 +35,12 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 		return nil, fmt.Errorf("source collection %q not found", srcID)
 	}
 
+	// Hold the source collection read lock for the entire fork operation to
+	// prevent mutations (inserts/deletes) from producing an inconsistent copy.
+	// This is critical: the index deep-copy below iterates over in-memory state
+	// that must remain stable for the fork to be a point-in-time snapshot.
 	srcCol.mu.RLock()
 	srcMeta := srcCol.meta
-	srcCol.mu.RUnlock()
 
 	// Create the new collection in SysDB with the same config
 	newMeta, err := m.sysdb.CreateCollection(
@@ -47,12 +50,14 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 		srcMeta.IndexType,
 	)
 	if err != nil {
+		srcCol.mu.RUnlock()
 		return nil, fmt.Errorf("fork: creating new collection %q: %w", newName, err)
 	}
 
 	// Create a fresh index for the fork
 	newIdx, err := createIndex(srcMeta.Dimension, srcMeta.Metric, srcMeta.IndexType)
 	if err != nil {
+		srcCol.mu.RUnlock()
 		m.sysdb.DeleteCollection(newMeta.ID)
 		return nil, fmt.Errorf("fork: creating index for %q: %w", newName, err)
 	}
@@ -66,11 +71,13 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 	}
 
 	newCol := &Collection{
-		meta:       newMeta,
-		idx:        newIdx,
-		wal:        m.wal,
-		sysdb:      m.sysdb,
+		meta:  newMeta,
+		idx:   newIdx,
+		wal:   m.wal,
+		sysdb: m.sysdb,
 	}
+
+	srcCol.mu.RUnlock()
 
 	m.mu.Lock()
 	m.collections[newMeta.ID] = newCol

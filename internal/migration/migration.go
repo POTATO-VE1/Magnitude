@@ -141,6 +141,10 @@ func (p *Planner) PlanMigration(collectionID, sourceNode, targetNode string, tot
 // TransferFunc is called to transfer a batch of vector IDs to the target node.
 type TransferFunc func(batch []uint64) error
 
+// VectorSource returns the next batch of vector IDs to migrate, or nil when exhausted.
+// Called repeatedly until it returns nil or an empty slice.
+type VectorSource func() ([]uint64, error)
+
 // ProgressFunc is called to report migration progress (0.0 to 1.0).
 type ProgressFunc func(progress float64)
 
@@ -172,36 +176,32 @@ func (w *Worker) OnProgress(fn ProgressFunc) {
 	w.onProgress = fn
 }
 
-// ExecutePlan executes a migration plan by calling the transfer function
-// for each batch. Returns nil on success, error on permanent failure.
-func (w *Worker) ExecutePlan(plan MigrationPlan, transferFn TransferFunc) error {
+// ExecutePlan executes a migration plan by fetching vector IDs from the source
+// and transferring them in batches. Returns nil on success, error on permanent failure.
+func (w *Worker) ExecutePlan(plan MigrationPlan, source VectorSource, transferFn TransferFunc) error {
 	slog.Info("migration: starting",
 		"plan_id", plan.ID,
 		"collection", plan.CollectionID,
 		"source", plan.SourceNode,
 		"target", plan.TargetNode,
-		"total_vectors", plan.TotalVectors,
-		"batch_count", plan.BatchCount,
 	)
 
-	// Generate batch IDs (sequential for now, could be hash-range based)
-	remaining := plan.TotalVectors
-	batchNum := 0
 	batchSize := plan.BatchSize
 	if batchSize <= 0 {
 		batchSize = w.config.BatchSize
 	}
 
-	for remaining > 0 {
-		curBatchSize := batchSize
-		if curBatchSize > remaining {
-			curBatchSize = remaining
-		}
+	batchNum := 0
+	totalTransferred := 0
 
-		// Generate vector IDs for this batch
-		batch := make([]uint64, curBatchSize)
-		for i := range batch {
-			batch[i] = uint64(batchNum*batchSize + i)
+	for {
+		// Fetch next batch of actual vector IDs from source
+		batch, err := source()
+		if err != nil {
+			return fmt.Errorf("migration: fetching batch %d: %w", batchNum, err)
+		}
+		if len(batch) == 0 {
+			break // exhausted
 		}
 
 		// Transfer with retries
@@ -236,22 +236,29 @@ func (w *Worker) ExecutePlan(plan MigrationPlan, transferFn TransferFunc) error 
 				batchNum, w.config.MaxRetries, lastErr)
 		}
 
-		remaining -= curBatchSize
+		totalTransferred += len(batch)
 		batchNum++
 
-		// Report progress
-		progress := float64(plan.TotalVectors-remaining) / float64(plan.TotalVectors)
-		w.mu.Lock()
-		if w.onProgress != nil {
-			w.onProgress(progress)
+		// Report progress if total is known
+		if plan.TotalVectors > 0 {
+			progress := float64(totalTransferred) / float64(plan.TotalVectors)
+			w.mu.Lock()
+			if w.onProgress != nil {
+				w.onProgress(progress)
+			}
+			w.mu.Unlock()
 		}
-		w.mu.Unlock()
+
+		if len(batch) < batchSize {
+			break // last partial batch
+		}
 	}
 
 	slog.Info("migration: completed",
 		"plan_id", plan.ID,
 		"collection", plan.CollectionID,
-		"vectors_transferred", plan.TotalVectors,
+		"vectors_transferred", totalTransferred,
+		"batches", batchNum,
 	)
 
 	return nil

@@ -517,3 +517,42 @@ func (s *SPANNIndex) kmeans(data []posting, k, maxIter int) [][]float32 {
 
 // Compile-time interface check
 var _ index.Index = (*SPANNIndex)(nil)
+var _ index.VectorExporter = (*SPANNIndex)(nil)
+
+// ExportVectors returns all live vectors across posting lists and dirty buffer.
+func (s *SPANNIndex) ExportVectors() []index.ExportedVector {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []index.ExportedVector
+
+	// Export from posting store
+	if s.store != nil {
+		for cid := range s.store.offsets {
+			posts, err := s.store.GetPostings(cid)
+			if err != nil {
+				continue
+			}
+			for _, p := range posts {
+				if s.deleted[p.id] {
+					continue
+				}
+				vec := make([]float32, len(p.vector))
+				copy(vec, p.vector)
+				result = append(result, index.ExportedVector{ID: p.id, Vector: vec})
+			}
+		}
+	}
+
+	// Export from dirty buffer
+	for _, p := range s.dirtyBuf {
+		if s.deleted[p.id] {
+			continue
+		}
+		vec := make([]float32, len(p.vector))
+		copy(vec, p.vector)
+		result = append(result, index.ExportedVector{ID: p.id, Vector: vec})
+	}
+
+	return result
+}

@@ -1,6 +1,7 @@
 package ivf
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"runtime"
@@ -66,6 +67,46 @@ func (km *KMeans) Fit(vectors []float32, n int) []int {
 		prevChanges = changes
 
 		// Update step: recompute centroids
+		km.updateCentroids(vectors, n, assignments)
+	}
+
+	return assignments
+}
+
+// FitCtx is a context-aware variant of Fit that checks for cancellation
+// between iterations. Returns nil if the context was cancelled.
+func (km *KMeans) FitCtx(ctx context.Context, vectors []float32, n int) []int {
+	if n <= km.K {
+		km.Centroids = make([]float32, n*km.Dim)
+		copy(km.Centroids, vectors[:n*km.Dim])
+		assignments := make([]int, n)
+		for i := range assignments {
+			assignments[i] = i
+		}
+		return assignments
+	}
+
+	km.initPlusPlus(vectors, n)
+
+	assignments := make([]int, n)
+	prevChanges := n
+
+	for iter := 0; iter < km.MaxIter; iter++ {
+		// Check for cancellation between iterations
+		if ctx.Err() != nil {
+			return nil
+		}
+
+		changes := km.assignParallel(vectors, n, assignments)
+
+		if float64(changes)/float64(n) < 0.001 && iter > 0 {
+			break
+		}
+		if changes == 0 && prevChanges == 0 {
+			break
+		}
+		prevChanges = changes
+
 		km.updateCentroids(vectors, n, assignments)
 	}
 

@@ -17,6 +17,7 @@ package collection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -44,6 +45,18 @@ type Collection struct {
 	sysdb         *metadata.SysDB
 }
 
+// GossipEventKind identifies the type of gossip event for cluster dissemination.
+type GossipEventKind uint8
+
+const (
+	GossipEventCreateCollection GossipEventKind = iota + 1
+	GossipEventDropCollection
+)
+
+// GossipBroadcaster sends gossip events to the cluster.
+// Defined here to avoid a circular dependency with internal/gossip.
+type GossipBroadcaster func(event GossipEventKind, payload []byte)
+
 // Manager manages all collections and routes API operations.
 type Manager struct {
 	mu             sync.RWMutex
@@ -51,6 +64,7 @@ type Manager struct {
 	sysdb          *metadata.SysDB
 	wal            storage.WAL
 	flowBus        *events.FlowBus   // optional — nil disables event notifications
+	broadcaster    GossipBroadcaster // optional — nil disables gossip
 	dataDir        string            // root data directory for snapshot storage
 	snapshotSeqIDs map[string]uint64 // collection ID → snapshot seqID for partial WAL replay
 }
@@ -71,6 +85,21 @@ func WithFlowBus(bus *events.FlowBus) ManagerOption {
 // WithDataDir sets the root data directory for snapshot storage.
 func WithDataDir(dir string) ManagerOption {
 	return func(m *Manager) { m.dataDir = dir }
+}
+
+// WithGossipBroadcaster sets the gossip broadcaster for cluster-wide event dissemination.
+// When set, CreateCollection and DeleteCollection will broadcast the event to peers.
+func WithGossipBroadcaster(b GossipBroadcaster) ManagerOption {
+	return func(m *Manager) { m.broadcaster = b }
+}
+
+// SetGossipBroadcaster sets the gossip broadcaster after Manager creation.
+// Needed because the gossip protocol is initialized after the Manager.
+// Must be called before any collection operations (during startup).
+func (m *Manager) SetGossipBroadcaster(b GossipBroadcaster) {
+	m.mu.Lock()
+	m.broadcaster = b
+	m.mu.Unlock()
 }
 
 // NewManager creates a new collection manager.
@@ -201,6 +230,17 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 		m.flowBus.Notify(events.EventCollectionCreated)
 	}
 
+	// Broadcast to cluster peers
+	if m.broadcaster != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"name":       name,
+			"dim":        dim,
+			"metric":     metric,
+			"index_type": indexType,
+		})
+		m.broadcaster(GossipEventCreateCollection, payload)
+	}
+
 	return meta, nil
 }
 
@@ -233,6 +273,17 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 		"database_id", databaseID,
 		"name", meta.Name,
 	)
+
+	// Broadcast to cluster peers
+	if m.broadcaster != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"name":       name,
+			"dim":        dim,
+			"metric":     metric,
+			"index_type": indexType,
+		})
+		m.broadcaster(GossipEventCreateCollection, payload)
+	}
 
 	return meta, nil
 }
@@ -312,6 +363,25 @@ func (m *Manager) ListCollectionsScoped(tenantID, databaseID string) ([]*metadat
 	return result, nil
 }
 
+// ListCollectionsForTenant returns all collections for a tenant, regardless of database.
+// Used by v1 API handlers when tenant auth is active but no database scope is specified.
+func (m *Manager) ListCollectionsForTenant(tenantID string) ([]*metadata.Collection, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []*metadata.Collection
+	for _, col := range m.collections {
+		col.mu.RLock()
+		if col.meta.TenantID == tenantID {
+			metaCopy := *col.meta
+			metaCopy.VectorCount = col.idx.Len()
+			result = append(result, &metaCopy)
+		}
+		col.mu.RUnlock()
+	}
+	return result, nil
+}
+
 // DeleteCollection removes a collection.
 func (m *Manager) DeleteCollection(id string) error {
 	m.mu.Lock()
@@ -328,7 +398,17 @@ func (m *Manager) DeleteCollection(id string) error {
 		ivfIdx.Close()
 	}
 
-	return m.sysdb.DeleteCollection(id)
+	if err := m.sysdb.DeleteCollection(id); err != nil {
+		return err
+	}
+
+	// Broadcast to cluster peers
+	if m.broadcaster != nil {
+		payload, _ := json.Marshal(map[string]string{"id": id, "name": col.meta.Name})
+		m.broadcaster(GossipEventDropCollection, payload)
+	}
+
+	return nil
 }
 
 // DeleteCollectionScoped removes a collection only if it belongs to the given tenant.
@@ -343,6 +423,7 @@ func (m *Manager) DeleteCollectionScoped(tenantID, collectionID string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("collection %q not found", collectionID) // 404, not 403
 	}
+	colName := col.meta.Name
 	delete(m.collections, collectionID)
 	m.mu.Unlock()
 
@@ -350,7 +431,87 @@ func (m *Manager) DeleteCollectionScoped(tenantID, collectionID string) error {
 		ivfIdx.Close()
 	}
 
-	return m.sysdb.DeleteCollectionScoped(tenantID, collectionID)
+	if err := m.sysdb.DeleteCollectionScoped(tenantID, collectionID); err != nil {
+		return err
+	}
+
+	// Broadcast to cluster peers
+	if m.broadcaster != nil {
+		payload, _ := json.Marshal(map[string]string{"id": collectionID, "name": colName})
+		m.broadcaster(GossipEventDropCollection, payload)
+	}
+
+	return nil
+}
+
+// CreateCollectionRemote creates a collection locally without broadcasting gossip.
+// Called by the gossip event handler when a peer creates a collection — broadcasting
+// back would create an infinite gossip loop.
+func (m *Manager) CreateCollectionRemote(name string, dim int, metric, indexType string) error {
+	// Check if collection with this name already exists
+	existing, _ := m.sysdb.GetCollectionByName(name)
+	if existing != nil {
+		return nil // idempotent — already exists
+	}
+
+	meta, err := m.sysdb.CreateCollection(name, dim, metric, indexType)
+	if err != nil {
+		return fmt.Errorf("collection: remote create %q: %w", name, err)
+	}
+
+	idx, err := createIndex(dim, metric, indexType)
+	if err != nil {
+		m.sysdb.DeleteCollection(meta.ID)
+		return fmt.Errorf("collection: remote create index for %q: %w", name, err)
+	}
+
+	m.mu.Lock()
+	m.collections[meta.ID] = &Collection{
+		meta:          meta,
+		idx:           idx,
+		invertedIndex: sparse.NewInvertedIndex(),
+		wal:           m.wal,
+		sysdb:         m.sysdb,
+	}
+	m.mu.Unlock()
+
+	slog.Info("collection created (via gossip)",
+		"id", meta.ID,
+		"name", name,
+		"dim", dim,
+		"metric", metric,
+		"index_type", indexType,
+	)
+	return nil
+}
+
+// DeleteCollectionRemote deletes a collection locally without broadcasting gossip.
+// Called by the gossip event handler when a peer deletes a collection.
+func (m *Manager) DeleteCollectionRemote(name string) error {
+	col, _ := m.sysdb.GetCollectionByName(name)
+	if col == nil {
+		return nil // idempotent — already gone
+	}
+
+	m.mu.Lock()
+	c, exists := m.collections[col.ID]
+	if exists {
+		delete(m.collections, col.ID)
+	}
+	m.mu.Unlock()
+
+	if exists {
+		if ivfIdx, ok := c.idx.(*ivf.IVFIndex); ok {
+			ivfIdx.Close()
+		}
+	}
+
+	if err := m.sysdb.DeleteCollection(col.ID); err != nil {
+		return fmt.Errorf("collection: remote delete %q: %w", name, err)
+	}
+
+	slog.Info("collection deleted (via gossip)", "id", col.ID, "name", name)
+	return nil
 }
 
 // InsertVectors inserts a batch of vectors into a collection.
@@ -465,39 +626,39 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 			return nil, err
 		}
 	} else {
-		searchK := k * 4
+		searchK := k * 10
+		maxK := col.idx.Len()
+		if searchK > maxK {
+			searchK = maxK
+		}
 		if searchK < 50 {
 			searchK = 50
 		}
-		maxK := col.idx.Len()
 
-		for {
-			res, err := col.idx.Search(ctx, query, searchK, nprobe)
-			if err != nil {
-				return nil, err
-			}
+		res, err := col.idx.Search(ctx, query, searchK, nprobe)
+		if err != nil {
+			return nil, err
+		}
 
-			filtered := res[:0]
-			for _, r := range res {
-				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.ID)
-				if filter.Match(metaMap) {
-					filtered = append(filtered, r)
-				}
-			}
+		var vIDs []uint64
+		for _, r := range res {
+			vIDs = append(vIDs, r.ID)
+		}
 
-			if len(filtered) >= k || searchK >= maxK || len(res) < searchK || searchK >= k*32 {
-				if len(filtered) > k {
-					filtered = filtered[:k]
-				}
-				results = filtered
-				break
-			}
+		batchMeta, _ := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
 
-			searchK *= 2
-			if searchK > maxK {
-				searchK = maxK
+		filtered := res[:0]
+		for _, r := range res {
+			metaMap := batchMeta[r.ID]
+			if filter.Match(metaMap) {
+				filtered = append(filtered, r)
 			}
 		}
+
+		if len(filtered) > k {
+			filtered = filtered[:k]
+		}
+		results = filtered
 	}
 
 	return results, nil
@@ -563,55 +724,56 @@ func (m *Manager) HybridSearch(
 			filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
 		}
 	} else {
-		searchK := topK * 4
+		searchK := topK * 10
+		maxK := col.idx.Len()
+		if searchK > maxK {
+			searchK = maxK
+		}
 		if searchK < 50 {
 			searchK = 50
 		}
-		maxK := col.idx.Len()
 
-		for {
-			var (
-				denseResults  []index.SearchResult
-				sparseResults []sparse.SearchResult
-				denseErr      error
-				wg            sync.WaitGroup
-			)
-			wg.Add(2)
-			go func() {
-				defer wg.Done()
-				denseResults, denseErr = col.idx.Search(ctx, queryVector, searchK, nprobe)
-			}()
-			go func() {
-				defer wg.Done()
-				sparseResults = col.invertedIndex.Search(queryText, searchK)
-			}()
-			wg.Wait()
-			if denseErr != nil {
-				return nil, denseErr
-			}
+		var (
+			denseResults  []index.SearchResult
+			sparseResults []sparse.SearchResult
+			denseErr      error
+			wg            sync.WaitGroup
+		)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			denseResults, denseErr = col.idx.Search(ctx, queryVector, searchK, nprobe)
+		}()
+		go func() {
+			defer wg.Done()
+			sparseResults = col.invertedIndex.Search(queryText, searchK)
+		}()
+		wg.Wait()
+		if denseErr != nil {
+			return nil, denseErr
+		}
 
-			filteredDense = nil
-			for _, r := range denseResults {
-				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.ID)
-				if filter.Match(metaMap) {
-					filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
-				}
-			}
+		var vIDs []uint64
+		for _, r := range denseResults {
+			vIDs = append(vIDs, r.ID)
+		}
+		for _, r := range sparseResults {
+			vIDs = append(vIDs, r.DocID)
+		}
 
-			filteredSparse = nil
-			for _, r := range sparseResults {
-				metaMap, _ := col.sysdb.LoadVectorMetadata(collectionID, r.DocID)
-				if filter.Match(metaMap) {
-					filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
-				}
-			}
+		batchMeta, _ := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
 
-			if (len(filteredDense) >= topK && len(filteredSparse) >= topK) || searchK >= maxK || (len(denseResults) < searchK && len(sparseResults) < searchK) || searchK >= topK*32 {
-				break
+		for _, r := range denseResults {
+			metaMap := batchMeta[r.ID]
+			if filter.Match(metaMap) {
+				filteredDense = append(filteredDense, search.RankedResult{ID: r.ID, Score: r.Score})
 			}
-			searchK *= 2
-			if searchK > maxK {
-				searchK = maxK
+		}
+
+		for _, r := range sparseResults {
+			metaMap := batchMeta[r.DocID]
+			if filter.Match(metaMap) {
+				filteredSparse = append(filteredSparse, search.RankedResult{ID: r.DocID, Score: r.Score})
 			}
 		}
 	}

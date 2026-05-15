@@ -181,12 +181,23 @@ type ClusterConfig struct {
 
 	// DefaultWriteConsistency is the default consistency for insert operations. Default: "one"
 	DefaultWriteConsistency string `yaml:"defaultWriteConsistency"`
+
+	// RequestTimeoutMS is the timeout in milliseconds for inter-node HTTP requests
+	// (forwarded inserts, searches, deletes). A value of 0 uses the default of 30s.
+	// Large batch inserts or high-dimensional vectors may require higher values.
+	RequestTimeoutMS int `yaml:"requestTimeoutMS"`
+
+	// SeedNodes is a list of peer addresses (host:port) to join on startup.
+	SeedNodes []string `yaml:"seedNodes"`
 }
 
 // GossipConfig controls the gossip protocol for cluster membership.
 type GossipConfig struct {
 	// Port is the UDP port for gossip messages. Default: 7946
 	Port int `yaml:"port"`
+
+	// SecretKey is used for HMAC-SHA256 signing of UDP packets.
+	SecretKey string `yaml:"secretKey"`
 
 	// Fanout is the number of random peers to gossip to per round. Default: 3
 	Fanout int `yaml:"fanout"`
@@ -286,9 +297,12 @@ func DefaultConfig() *Config {
 			VirtualNodes:            150,
 			DefaultReadConsistency:  "one",
 			DefaultWriteConsistency: "one",
+			RequestTimeoutMS:        30000, // 30s default; increase for large batch inserts
+			SeedNodes:               []string{},
 		},
 		Gossip: GossipConfig{
 			Port:          7946,
+			SecretKey:     "", // empty means no HMAC signing (not recommended for production)
 			Fanout:        3,
 			MaxSeen:       5000,
 			SeenExpiry:    30 * time.Second,

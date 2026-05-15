@@ -570,3 +570,22 @@ func (h *maxCandHeap) Pop() any {
 
 // Compile-time interface check
 var _ index.Index = (*HNSWIndex)(nil)
+var _ index.VectorExporter = (*HNSWIndex)(nil)
+
+// ExportVectors returns all live (non-deleted) vectors in the HNSW graph for migration.
+func (h *HNSWIndex) ExportVectors() []index.ExportedVector {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	result := make([]index.ExportedVector, 0, len(h.idToNode))
+	for extID, nodeIdx := range h.idToNode {
+		if h.deleted[nodeIdx] {
+			continue
+		}
+		n := h.nodes[nodeIdx]
+		vec := make([]float32, len(n.vector))
+		copy(vec, n.vector)
+		result = append(result, index.ExportedVector{ID: extID, Vector: vec})
+	}
+	return result
+}

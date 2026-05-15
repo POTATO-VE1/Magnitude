@@ -40,3 +40,10 @@ Thumbs.db
 TIER3_IMPLEMENTATION_PLAN.md
 agent.md
 context.md
+
+# ── Compiled binary ──
+server
+
+# ── Scratch / internal docs (not for repo) ──
+scratch/
+docs/

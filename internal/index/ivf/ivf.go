@@ -469,6 +469,8 @@ func (idx *IVFIndex) Close() {
 }
 
 // backgroundRebuilder watches the dirty buffer and triggers rebuilds.
+// The context is threaded into RebuildCtx so that shutdown cancellation
+// can interrupt a long-running K-Means computation.
 func (idx *IVFIndex) backgroundRebuilder(ctx context.Context) {
 	defer close(idx.done)
 	ticker := time.NewTicker(5 * time.Second)
@@ -489,13 +491,199 @@ func (idx *IVFIndex) backgroundRebuilder(ctx context.Context) {
 					"dirty_count", dirtyLen,
 					"threshold", threshold,
 				)
-				if err := idx.Rebuild(); err != nil {
-					slog.Error("IVF rebuild failed", "error", err)
+				if err := idx.RebuildCtx(ctx); err != nil {
+					// Don't log if we were just cancelled during shutdown
+					if ctx.Err() == nil {
+						slog.Error("IVF rebuild failed", "error", err)
+					}
 				}
 			}
 		}
 	}
 }
 
+// RebuildCtx is a context-aware variant of Rebuild that checks for cancellation
+// during the expensive K-Means phase. Used by backgroundRebuilder so that
+// graceful shutdown isn't blocked by a long rebuild.
+func (idx *IVFIndex) RebuildCtx(ctx context.Context) error {
+	// Phase 1: Drain dirty buffer under write lock
+	idx.mu.Lock()
+	dirtyIDs, dirtyVecs, dirtyCount := idx.dirty.AllVectors()
+	mainCount := idx.count
+	totalN := mainCount + dirtyCount
+
+	allVecs := make([]float32, totalN*idx.dim)
+	allIDs := make([]uint64, totalN)
+
+	if idx.usePQ && idx.built {
+		for i := 0; i < mainCount; i++ {
+			id := idx.ids[i]
+			cluster := idx.clusterOf[id]
+			oldCentroid := idx.kmeans.Centroids[cluster*idx.dim : (cluster+1)*idx.dim]
+			codeOffset := i * idx.pq.M
+			codes := idx.pqCodes[codeOffset : codeOffset+idx.pq.M]
+			res, _ := idx.pq.Decode(codes)
+
+			vecOffset := i * idx.dim
+			for d := 0; d < idx.dim; d++ {
+				allVecs[vecOffset+d] = oldCentroid[d] + res[d]
+			}
+		}
+	} else if mainCount > 0 && !idx.usePQ {
+		copy(allVecs, idx.vectors[:mainCount*idx.dim])
+	}
+	copy(allIDs, idx.ids[:mainCount])
+
+	copy(allVecs[mainCount*idx.dim:], dirtyVecs[:dirtyCount*idx.dim])
+	copy(allIDs[mainCount:], dirtyIDs[:dirtyCount])
+
+	idx.dirty, _ = flat.NewFlatIndex(idx.dim, idx.metric)
+	idx.mu.Unlock()
+
+	if totalN == 0 {
+		return nil
+	}
+
+	// Check cancellation before the expensive phase
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// Phase 2: K-Means++ outside lock (expensive)
+	effectiveK := idx.k
+	if totalN < effectiveK {
+		effectiveK = totalN
+	}
+
+	km := NewKMeans(effectiveK, idx.dim, idx.distFn, time.Now().UnixNano())
+	assignments := km.FitCtx(ctx, allVecs, totalN)
+	if assignments == nil {
+		return ctx.Err() // cancelled during K-Means
+	}
+
+	// Check again after K-Means
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// PQ training and encoding
+	var newPQCodes []uint8
+	if idx.usePQ {
+		residuals := make([]float32, totalN*idx.dim)
+		for i := 0; i < totalN; i++ {
+			cluster := assignments[i]
+			centroid := km.Centroids[cluster*idx.dim : (cluster+1)*idx.dim]
+			for d := 0; d < idx.dim; d++ {
+				residuals[i*idx.dim+d] = allVecs[i*idx.dim+d] - centroid[d]
+			}
+		}
+		if !idx.pq.IsTrained() {
+			idx.pq.Train(residuals, totalN, 25)
+		}
+		newPQCodes = make([]uint8, totalN*idx.pq.M)
+		for i := 0; i < totalN; i++ {
+			codes, _ := idx.pq.Encode(residuals[i*idx.dim : (i+1)*idx.dim])
+			copy(newPQCodes[i*idx.pq.M:(i+1)*idx.pq.M], codes)
+		}
+	}
+
+	// Build posting lists
+	newPostingList := make([][]uint64, effectiveK)
+	for i := range newPostingList {
+		newPostingList[i] = make([]uint64, 0)
+	}
+	newClusterOf := make(map[uint64]int, totalN)
+	for i, cluster := range assignments {
+		id := allIDs[i]
+		newPostingList[cluster] = append(newPostingList[cluster], id)
+		newClusterOf[id] = cluster
+	}
+
+	// Phase 3: Swap in new state under write lock
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	if totalN > idx.capacity {
+		idx.capacity = totalN * 2
+		if idx.usePQ {
+			idx.pqCodes = make([]uint8, idx.capacity*idx.pq.M)
+		} else {
+			idx.vectors = make([]float32, idx.capacity*idx.dim)
+		}
+		idx.ids = make([]uint64, idx.capacity)
+	}
+
+	if idx.usePQ {
+		copy(idx.pqCodes, newPQCodes)
+		idx.vectors = nil
+	} else {
+		copy(idx.vectors, allVecs[:totalN*idx.dim])
+	}
+	copy(idx.ids, allIDs[:totalN])
+	idx.count = totalN
+
+	idx.idToRow = make(map[uint64]int, totalN)
+	for i := 0; i < totalN; i++ {
+		idx.idToRow[allIDs[i]] = i
+	}
+
+	idx.kmeans = km
+	idx.postingList = newPostingList
+	idx.clusterOf = newClusterOf
+	idx.built = true
+
+	return nil
+}
+
 // Compile-time interface check
 var _ index.Index = (*IVFIndex)(nil)
+var _ index.VectorExporter = (*IVFIndex)(nil)
+
+// ExportVectors returns all live vectors in the IVF index for migration.
+// Iterates the main storage (idToRow) — does NOT include dirty buffer vectors
+// that haven't been assigned to clusters yet, since those will be exported
+// via a separate dirty flush during migration.
+//
+// When PQ is enabled, vectors are reconstructed from PQ codes + coarse centroids
+// (approximate reconstruction). This is necessary because idx.vectors is nil
+// after Rebuild with PQ enabled.
+func (idx *IVFIndex) ExportVectors() []index.ExportedVector {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	result := make([]index.ExportedVector, 0, idx.count)
+
+	if idx.usePQ && idx.vectors == nil && idx.pq != nil && idx.kmeans != nil {
+		// PQ mode: reconstruct approximate vectors from codes + centroids
+		for id, row := range idx.idToRow {
+			cluster, ok := idx.clusterOf[id]
+			if !ok {
+				continue
+			}
+			centroid := idx.kmeans.Centroids[cluster*idx.dim : (cluster+1)*idx.dim]
+			codeOffset := row * idx.pq.M
+			codes := idx.pqCodes[codeOffset : codeOffset+idx.pq.M]
+			residual, err := idx.pq.Decode(codes)
+			if err != nil {
+				continue
+			}
+
+			vec := make([]float32, idx.dim)
+			for d := 0; d < idx.dim; d++ {
+				vec[d] = centroid[d] + residual[d]
+			}
+			result = append(result, index.ExportedVector{ID: id, Vector: vec})
+		}
+	} else if idx.vectors != nil {
+		// Uncompressed mode: direct copy from vectors array
+		for id, row := range idx.idToRow {
+			start := row * idx.dim
+			end := start + idx.dim
+			vec := make([]float32, idx.dim)
+			copy(vec, idx.vectors[start:end])
+			result = append(result, index.ExportedVector{ID: id, Vector: vec})
+		}
+	}
+
+	return result
+}

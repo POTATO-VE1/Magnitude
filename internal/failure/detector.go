@@ -13,6 +13,7 @@ package failure
 
 import (
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -54,6 +55,11 @@ type trackedNode struct {
 	state       NodeState
 	lastSeen    time.Time
 	stateChange time.Time
+
+	// Phi-Accrual state
+	intervals   []time.Duration
+	intervalIdx int
+	phi         float64
 }
 
 // Config configures the failure detector.
@@ -179,13 +185,26 @@ func (d *Detector) RecordHeartbeat(nodeID string) {
 		return
 	}
 
-	node.lastSeen = time.Now()
+	now := time.Now()
+	elapsed := now.Sub(node.lastSeen)
+	node.lastSeen = now
+
+	if node.intervals == nil {
+		node.intervals = make([]time.Duration, 100)
+	}
+	// Ignore giant leaps (e.g. sleep/wake or first heartbeat)
+	if elapsed > 0 && elapsed < 5*time.Minute {
+		node.intervals[node.intervalIdx] = elapsed
+		node.intervalIdx = (node.intervalIdx + 1) % 100
+	}
+
 	if node.state != StateAlive {
 		slog.Info("failure detector: node recovered",
 			"id", nodeID,
 			"previous_state", node.state.String(),
 		)
 		node.state = StateAlive
+		node.stateChange = now
 	}
 }
 
@@ -199,6 +218,18 @@ func (d *Detector) GetState(nodeID string) NodeState {
 		return StateUnknown
 	}
 	return node.state
+}
+
+// GetAddress returns the HTTP API address of a node.
+func (d *Detector) GetAddress(nodeID string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	node, exists := d.nodes[nodeID]
+	if !exists {
+		return ""
+	}
+	return node.address
 }
 
 // NodeCount returns the number of tracked nodes.
@@ -245,24 +276,52 @@ func (d *Detector) checkAll() {
 	now := time.Now()
 	for nodeID, node := range d.nodes {
 		elapsed := now.Sub(node.lastSeen)
-
 		previousState := node.state
-		switch {
-		case elapsed >= d.config.DeadAfter:
-			node.state = StateDead
-		case elapsed >= d.config.SuspectAfter:
-			node.state = StateSuspect
-		default:
-			node.state = StateAlive
+
+		var sum time.Duration
+		var count int
+		for _, inv := range node.intervals {
+			if inv > 0 {
+				sum += inv
+				count++
+			}
+		}
+
+		if count < 10 {
+			// Not enough data for Phi calculation; fallback to static timeouts
+			switch {
+			case elapsed >= d.config.DeadAfter:
+				node.state = StateDead
+			case elapsed >= d.config.SuspectAfter:
+				node.state = StateSuspect
+			default:
+				node.state = StateAlive
+			}
+		} else {
+			// Phi-Accrual using Exponential Distribution
+			mean := float64(sum) / float64(count)
+			phi := (float64(elapsed) / mean) / math.Ln10
+			node.phi = phi
+
+			switch {
+			case phi >= 8.0: // 99.999999% probability of failure
+				node.state = StateDead
+			case phi >= 3.0: // 99.9% probability
+				node.state = StateSuspect
+			default:
+				node.state = StateAlive
+			}
 		}
 
 		// Fire callbacks on state transitions
 		if node.state != previousState {
+			node.stateChange = now
 			slog.Info("failure detector: state change",
 				"node", nodeID,
 				"from", previousState.String(),
 				"to", node.state.String(),
 				"elapsed", elapsed,
+				"phi", node.phi,
 			)
 
 			switch node.state {

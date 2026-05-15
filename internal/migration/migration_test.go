@@ -122,6 +122,13 @@ func TestWorker_ExecutePlan(t *testing.T) {
 		return nil
 	}
 
+	// Create a vector source that returns 25 IDs in batches of 10
+	allIDs := make([]uint64, 25)
+	for i := range allIDs {
+		allIDs[i] = uint64(i + 1)
+	}
+	source := batchSource(allIDs, 10)
+
 	plan := MigrationPlan{
 		ID:           "mig-001",
 		CollectionID: "col-1",
@@ -131,7 +138,7 @@ func TestWorker_ExecutePlan(t *testing.T) {
 		BatchCount:   3,
 	}
 
-	err := w.ExecutePlan(plan, transferFn)
+	err := w.ExecutePlan(plan, source, transferFn)
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
 	}
@@ -158,6 +165,8 @@ func TestWorker_ExecutePlan_TransferError(t *testing.T) {
 		return nil
 	}
 
+	source := batchSource([]uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 10)
+
 	plan := MigrationPlan{
 		ID:           "mig-002",
 		CollectionID: "col-1",
@@ -167,7 +176,7 @@ func TestWorker_ExecutePlan_TransferError(t *testing.T) {
 		BatchCount:   1,
 	}
 
-	err := w.ExecutePlan(plan, transferFn)
+	err := w.ExecutePlan(plan, source, transferFn)
 	// Should succeed after retries
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
@@ -185,6 +194,8 @@ func TestWorker_ExecutePlan_AllRetriesFail(t *testing.T) {
 		return fmt.Errorf("permanent error")
 	}
 
+	source := batchSource([]uint64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 10)
+
 	plan := MigrationPlan{
 		ID:           "mig-003",
 		CollectionID: "col-1",
@@ -194,7 +205,7 @@ func TestWorker_ExecutePlan_AllRetriesFail(t *testing.T) {
 		BatchCount:   1,
 	}
 
-	err := w.ExecutePlan(plan, transferFn)
+	err := w.ExecutePlan(plan, source, transferFn)
 	if err == nil {
 		t.Fatal("expected error after all retries fail")
 	}
@@ -216,6 +227,12 @@ func TestWorker_Progress(t *testing.T) {
 		return nil
 	}
 
+	allIDs := make([]uint64, 30)
+	for i := range allIDs {
+		allIDs[i] = uint64(i + 1)
+	}
+	source := batchSource(allIDs, 10)
+
 	plan := MigrationPlan{
 		ID:           "mig-004",
 		CollectionID: "col-1",
@@ -225,7 +242,7 @@ func TestWorker_Progress(t *testing.T) {
 		BatchCount:   3,
 	}
 
-	err := w.ExecutePlan(plan, transferFn)
+	err := w.ExecutePlan(plan, source, transferFn)
 	if err != nil {
 		t.Fatalf("ExecutePlan: %v", err)
 	}
@@ -239,5 +256,22 @@ func TestWorker_Progress(t *testing.T) {
 	last := progressUpdates[len(progressUpdates)-1]
 	if last != 1.0 {
 		t.Errorf("final progress = %f, want 1.0", last)
+	}
+}
+
+// batchSource creates a VectorSource that returns IDs in fixed-size batches.
+func batchSource(ids []uint64, batchSize int) VectorSource {
+	offset := 0
+	return func() ([]uint64, error) {
+		if offset >= len(ids) {
+			return nil, nil
+		}
+		end := offset + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[offset:end]
+		offset = end
+		return batch, nil
 	}
 }

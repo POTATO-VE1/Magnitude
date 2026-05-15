@@ -34,16 +34,22 @@ type SegmentCache struct {
 	lru          *list.List        // LRU ordering (front = most recent)
 	maxBytes     int64
 	currentBytes int64
-	seenFilter   map[string]bool // simplified bloom filter (exact for correctness)
+
+	// seen filter for admission control
+	seenFilter  map[string]*list.Element
+	seenLRU     *list.List
+	maxSeenKeys int
 }
 
 // NewSegmentCache creates a new cache with the given capacity in bytes.
 func NewSegmentCache(maxBytes int64) *SegmentCache {
 	return &SegmentCache{
-		entries:  make(map[string]*entry),
-		lru:      list.New(),
-		maxBytes: maxBytes,
-		seenFilter: make(map[string]bool),
+		entries:     make(map[string]*entry),
+		lru:         list.New(),
+		maxBytes:    maxBytes,
+		seenFilter:  make(map[string]*list.Element),
+		seenLRU:     list.New(),
+		maxSeenKeys: 100000,
 	}
 }
 
@@ -78,8 +84,16 @@ func (c *SegmentCache) Put(key string, value []byte) bool {
 	}
 
 	// Admission control: only cache on second access
-	if !c.seenFilter[key] {
-		c.seenFilter[key] = true
+	if _, ok := c.seenFilter[key]; !ok {
+		// Evict oldest seen key if filter is full
+		if c.seenLRU.Len() >= c.maxSeenKeys {
+			back := c.seenLRU.Back()
+			if back != nil {
+				delete(c.seenFilter, back.Value.(string))
+				c.seenLRU.Remove(back)
+			}
+		}
+		c.seenFilter[key] = c.seenLRU.PushFront(key)
 		return false
 	}
 
@@ -113,7 +127,10 @@ func (c *SegmentCache) Remove(key string) {
 		c.currentBytes -= e.size
 		delete(c.entries, key)
 	}
-	delete(c.seenFilter, key)
+	if elem, ok := c.seenFilter[key]; ok {
+		c.seenLRU.Remove(elem)
+		delete(c.seenFilter, key)
+	}
 }
 
 // Len returns the number of cached entries.
@@ -169,5 +186,6 @@ func (c *SegmentCache) Clear() {
 	c.entries = make(map[string]*entry)
 	c.lru.Init()
 	c.currentBytes = 0
-	c.seenFilter = make(map[string]bool)
+	c.seenFilter = make(map[string]*list.Element)
+	c.seenLRU.Init()
 }

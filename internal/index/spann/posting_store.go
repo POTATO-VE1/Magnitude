@@ -3,6 +3,7 @@ package spann
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"unsafe"
 
@@ -106,6 +107,7 @@ func (s *MmapPostingStore) readHeader() error {
 }
 
 // GetPostings returns the posting list for a centroid.
+// Returned slices own their memory — safe to hold after the store is closed.
 func (s *MmapPostingStore) GetPostings(centroidID int) ([]posting, error) {
 	if s.data == nil {
 		return nil, nil
@@ -117,20 +119,26 @@ func (s *MmapPostingStore) GetPostings(centroidID int) ([]posting, error) {
 	}
 
 	data := s.data
-	end := meta.offset + int64(meta.count)*(8+int64(s.dim)*4)
+	vecBytes := s.dim * 4
+	recordSize := 8 + vecBytes
+	end := meta.offset + int64(meta.count)*int64(recordSize)
 	if end > int64(len(data)) {
 		return nil, fmt.Errorf("posting list bounds out of range")
 	}
 
 	chunk := data[meta.offset:end]
 	postings := make([]posting, meta.count)
-	
-	vecBytes := s.dim * 4
+
 	for i := 0; i < meta.count; i++ {
-		postings[i].id = binary.LittleEndian.Uint64(chunk[i*(8+vecBytes) : i*(8+vecBytes)+8])
-		
-		vecData := chunk[i*(8+vecBytes)+8 : (i+1)*(8+vecBytes)]
-		vec := unsafe.Slice((*float32)(unsafe.Pointer(&vecData[0])), s.dim)
+		postings[i].id = binary.LittleEndian.Uint64(chunk[i*recordSize : i*recordSize+8])
+
+		// Copy vector data out of mmap into an owned Go slice.
+		// This prevents dangling pointers when the mmap store is closed.
+		vec := make([]float32, s.dim)
+		vecStart := i*recordSize + 8
+		for d := 0; d < s.dim; d++ {
+			vec[d] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[vecStart+d*4 : vecStart+d*4+4]))
+		}
 		postings[i].vector = vec
 	}
 

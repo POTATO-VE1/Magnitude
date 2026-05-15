@@ -127,7 +127,7 @@ func (rc *ReplicaClient) doJSON(ctx context.Context, method, url string, body an
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("replica client: %s %s: status %d: %s", method, url, resp.StatusCode, string(bodyBytes))
 	}
 

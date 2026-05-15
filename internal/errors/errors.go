@@ -64,6 +64,12 @@ const (
 	// ErrTenantNotFound is returned when an API call references a tenant that
 	// does not exist in the SysDB. Maps to HTTP 404.
 	ErrTenantNotFound
+
+	// ErrWALTruncation is returned when a WAL read requests entries starting
+	// from a sequence ID that has already been truncated. This indicates
+	// potential data loss — compaction removed entries the caller expected
+	// to replay. Maps to HTTP 500.
+	ErrWALTruncation
 )
 
 // VDBError is the canonical error type for the entire system.
@@ -128,7 +134,7 @@ func (e *VDBError) HTTPStatusCode() int {
 		return http.StatusInsufficientStorage // 507
 	case ErrIndexNotBuilt:
 		return http.StatusServiceUnavailable // 503
-	case ErrCorruptedFile, ErrIntegrityFailure:
+	case ErrCorruptedFile, ErrIntegrityFailure, ErrWALTruncation:
 		return http.StatusInternalServerError // 500
 	default:
 		return http.StatusInternalServerError // 500

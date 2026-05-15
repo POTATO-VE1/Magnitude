@@ -62,9 +62,12 @@ type Message struct {
 }
 
 // seenKey uniquely identifies a gossip event for deduplication.
+// Includes SeqNo so that re-broadcasts (e.g., node restart sending a new
+// Alive event) are not silently dropped as duplicates.
 type seenKey struct {
 	source string
 	event  EventKind
+	seqNo  uint64
 }
 
 // seenSet tracks which gossip events have been seen, with automatic expiry.
@@ -188,6 +191,10 @@ type Protocol struct {
 	mu       sync.RWMutex
 	running  bool
 	stopCh   chan struct{}
+	stopOnce sync.Once
+
+	bufferMu sync.Mutex
+	buffer   []Message
 }
 
 // New creates a new gossip protocol instance.
@@ -211,6 +218,7 @@ func New(nodeID string, cfg Config, callback EventCallback) *Protocol {
 		seen:     newSeenSet(cfg.MaxSeen, cfg.SeenExpiry),
 		callback: callback,
 		stopCh:   make(chan struct{}),
+		buffer:   make([]Message, 0, 100),
 	}
 }
 
@@ -224,7 +232,7 @@ func (g *Protocol) SetPeers(peers []string) {
 // HandleMessage processes an incoming gossip message.
 // Returns true if the message was new (not a duplicate), false if deduplicated.
 func (g *Protocol) HandleMessage(msg Message) bool {
-	key := seenKey{source: msg.Source, event: msg.Event}
+	key := seenKey{source: msg.Source, event: msg.Event, seqNo: msg.SeqNo}
 
 	// Dedup check
 	if g.seen.hasSeen(key) {
@@ -239,9 +247,9 @@ func (g *Protocol) HandleMessage(msg Message) bool {
 		return true
 	}
 
-	// Deliver to callback
+	// Deliver to callback (async to avoid blocking the UDP receive loop)
 	if g.callback != nil {
-		g.callback(msg)
+		go g.callback(msg)
 	}
 
 	return true

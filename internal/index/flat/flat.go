@@ -243,3 +243,20 @@ func (idx *FlatIndex) AllVectors() ([]uint64, []float32, int) {
 
 // Compile-time interface check
 var _ index.Index = (*FlatIndex)(nil)
+var _ index.VectorExporter = (*FlatIndex)(nil)
+
+// ExportVectors returns all live vectors in the index for migration.
+func (idx *FlatIndex) ExportVectors() []index.ExportedVector {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	result := make([]index.ExportedVector, 0, idx.count)
+	for id, row := range idx.idToRow {
+		start := row * idx.dim
+		end := start + idx.dim
+		vec := make([]float32, idx.dim)
+		copy(vec, idx.vectors[start:end])
+		result = append(result, index.ExportedVector{ID: id, Vector: vec})
+	}
+	return result
+}
