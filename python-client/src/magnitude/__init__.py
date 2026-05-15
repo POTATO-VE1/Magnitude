@@ -6,7 +6,7 @@ CLIP-powered semantic image search.
 Usage:
     from magnitude import VectorDBClient
 
-    client = VectorDBClient("https://localhost:8443")
+    client = VectorDBClient("http://localhost:8080")
     client.create_collection("my-col", dimension=512)
     client.insert("my-col", ids=[1, 2], vectors=[[0.1, ...], [0.2, ...]])
     results = client.search("my-col", query=[0.1, ...], top_k=10)

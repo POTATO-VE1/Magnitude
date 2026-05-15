@@ -70,13 +70,13 @@ class VectorDBClient:
     """Client for the Magnitude VectorDB HTTP API.
 
     Args:
-        base_url: Server URL (e.g., "https://localhost:8443").
+        base_url: Server URL (e.g., "http://localhost:8080").
         api_key: Optional API key for authentication.
         verify_ssl: Whether to verify TLS certificates. Set False for self-signed certs.
         timeout: Request timeout in seconds.
 
     Example:
-        >>> client = VectorDBClient("https://localhost:8443")
+        >>> client = VectorDBClient("http://localhost:8080")
         >>> col = client.create_collection("images", dimension=512)
         >>> client.insert("images", ids=[1], vectors=[[0.1, ...]])
         >>> results = client.search("images", query=[0.1, ...], top_k=5)
@@ -84,7 +84,7 @@ class VectorDBClient:
 
     def __init__(
         self,
-        base_url: str = "https://localhost:8443",
+        base_url: str = "http://localhost:8080",
         api_key: Optional[str] = None,
         verify_ssl: bool = True,
         timeout: int = 30,

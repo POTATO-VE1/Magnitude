@@ -12,20 +12,6 @@ make run
 
 That's it. The server starts on `http://localhost:8080` with sensible defaults — no config file, no certs, no setup required. Customize by editing `config.yaml` (optional).
 
-### Python Client
-
-```bash
-cd python-client
-python3 -m venv venv && source venv/bin/activate
-pip install -e ".[all]"
-
-# Ingest images from a directory
-magnitude-ingest --dir ./your-images
-
-# Interactive search
-magnitude-search
-```
-
 ## Docker
 
 ```bash
@@ -46,33 +32,115 @@ docker compose up --build
 
 ## API
 
+### REST (curl)
+
 ```bash
-# Create collection
+# Create a collection
 curl -X POST http://localhost:8080/v1/collections \
   -H "Content-Type: application/json" \
-  -d '{"name": "test", "dimension": 128, "metric": "cosine", "index_type": "hnsw"}'
+  -d '{"name": "docs", "dimension": 128, "metric": "cosine", "index_type": "hnsw"}'
 
 # Insert vectors
-curl -X POST http://localhost:8080/v1/collections/test/vectors \
+curl -X POST http://localhost:8080/v1/collections/{collection_id}/vectors \
   -H "Content-Type: application/json" \
-  -d '{"ids": [1, 2], "vectors": [[0.1, ...], [0.2, ...]]}'
+  -d '{"ids": [1, 2], "vectors": [[0.1, 0.2, ...], [0.3, 0.4, ...]]}'
 
 # Search
-curl -X POST http://localhost:8080/v1/collections/test/search \
+curl -X POST http://localhost:8080/v1/collections/{collection_id}/search \
   -H "Content-Type: application/json" \
-  -d '{"query": [0.1, ...], "k": 10}'
+  -d '{"query": [0.1, 0.2, ...], "k": 10}'
 ```
 
-## Python Client
+### Python Client
+
+Install the client:
+
+```bash
+cd python-client
+pip install -e .
+```
+
+Simple usage (v1 API — single-tenant):
 
 ```python
 from magnitude import VectorDBClient
 
-client = VectorDBClient("http://localhost:8080")
-client.create_collection("images", dimension=512)
-client.insert("images", ids=[1], vectors=[[0.1, ...]])
-results = client.search("images", query=[0.1, ...], top_k=5)
+client = VectorDBClient()  # defaults to http://localhost:8080
+col = client.create_collection("docs", dimension=128, metric="cosine")
+client.insert(col.id, ids=[1, 2], vectors=[[0.1, ...], [0.3, ...]])
+results = client.search(col.id, query=[0.1, ...], top_k=5)
+
+for r in results:
+    print(f"  id={r.id}  score={r.score:.4f}")
 ```
+
+### Go Client
+
+```go
+import "github.com/POTATO-VE1/Magnitude/pkg/client"
+
+c := client.New("http://localhost:8080", "")
+col, _ := c.CreateCollection(ctx, "docs", 128, "cosine", "hnsw")
+_ = c.Insert(ctx, col.ID, ids, vectors)
+results, _ := c.Search(ctx, col.ID, query, 10, 0)
+```
+
+## Semantic Image Search (CLIP)
+
+Magnitude ships with a CLIP-powered image search pipeline. It uses the `clip-ViT-B-32` model (512D vectors) to embed images and text queries into the same vector space.
+
+```bash
+cd python-client
+pip install -e ".[all]"  # installs CLIP, torch, rich, tqdm
+
+# Index a folder of images
+magnitude-ingest --dir ./photos
+
+# Interactive search REPL — type natural language, get ranked images
+magnitude-search
+```
+
+The ingest script uses the multi-tenant v2 API internally:
+
+```python
+from vectordb_client import VectorDBClient
+
+client = VectorDBClient()  # http://127.0.0.1:8080
+tenant_id = client.get_or_create_tenant("default")
+db_id = client.get_or_create_database(tenant_id, "images_db")
+col_id = client.get_or_create_collection(tenant_id, db_id, "clip_images", dimension=512)
+
+client.insert_vectors(tenant_id, db_id, col_id, ids=[1], vectors=[[...]])
+results = client.search_vectors(tenant_id, db_id, col_id, query_embedding=[...])
+```
+
+## API Reference
+
+### v1 — Simple (single-tenant)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/collections` | Create collection |
+| `GET` | `/v1/collections` | List collections |
+| `GET` | `/v1/collections/{id}` | Get collection |
+| `DELETE` | `/v1/collections/{id}` | Delete collection |
+| `POST` | `/v1/collections/{id}/vectors` | Insert vectors |
+| `POST` | `/v1/collections/{id}/search` | Search vectors |
+| `DELETE` | `/v1/collections/{id}/vectors/{vid}` | Delete vector |
+| `GET` | `/v1/health` | Health check |
+
+### v2 — Multi-tenant (tenant → database → collection)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v2/tenants` | Create tenant |
+| `GET` | `/api/v2/tenants` | List tenants |
+| `POST` | `/api/v2/tenants/{t}/databases` | Create database |
+| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections` | Create collection |
+| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/add` | Insert vectors |
+| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/query` | Search |
+| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/hybrid` | Hybrid search |
+| `POST` | `/api/v2/tenants/{t}/databases/{d}/collections/{c}/delete` | Delete vector |
 
 ## Configuration
 

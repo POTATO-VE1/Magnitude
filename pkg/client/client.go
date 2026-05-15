@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-//	c := client.New("http://localhost:8443", "my-api-key")
+//	c := client.New("http://localhost:8080", "my-api-key")
 //	col, err := c.CreateCollection(ctx, "my-collection", 128, "l2", "flat")
 //	err = c.Insert(ctx, col.ID, ids, vectors)
 //	results, err := c.Search(ctx, col.ID, query, 10, 0)

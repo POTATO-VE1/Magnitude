@@ -6,7 +6,7 @@ from typing import List, Dict, Any
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class VectorDBClient:
-    def __init__(self, host: str = "https://127.0.0.1:8443", admin_host: str = "http://127.0.0.1:9090"):
+    def __init__(self, host: str = "http://127.0.0.1:8080", admin_host: str = "http://127.0.0.1:9090"):
         self.host = host
         self.admin_host = admin_host
         self.tenant_id = None
