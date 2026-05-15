@@ -10,10 +10,18 @@ This guide gets you up and running locally. The database runs directly on your m
 
 Boot up the VectorDB server. It starts on port `8080` with zero configuration required.
 
+**Option A: Native**
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
 make run
+```
+
+**Option B: Docker**
+```bash
+git clone https://github.com/POTATO-VE1/Magnitude.git
+cd Magnitude
+docker compose up --build
 ```
 
 ### 2. Prepare the Python Environment
