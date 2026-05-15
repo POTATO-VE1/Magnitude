@@ -3,20 +3,25 @@
 # Override only what you need to change.
 
 server:
-  # Address for the main HTTPS API server.
-  addr: ":8443"
+  # Address for the API server.
+  # Default :8080 serves plain HTTP for local development.
+  # Change to :8443 when enabling TLS for production.
+  addr: ":8080"
 
   # Address for internal metrics (Prometheus) and pprof endpoints.
   # MUST be bound to localhost only in production — never expose to the internet.
   internalPort: ":9090"
 
-  # TLS certificate and key. Required for HTTPS.
-  # Generate a self-signed cert for development:
+  # TLS certificate and key. Leave empty for plain HTTP (development mode).
+  # To enable HTTPS, generate a self-signed cert:
   #   mkdir -p certs && openssl req -x509 -newkey rsa:4096 \
   #     -keyout certs/server.key -out certs/server.crt \
   #     -days 365 -nodes -subj '/CN=localhost'
-  certFile: "certs/server.crt"
-  keyFile: "certs/server.key"
+  # Then uncomment:
+  # certFile: "certs/server.crt"
+  # keyFile: "certs/server.key"
+  certFile: ""
+  keyFile: ""
 
   # Timeouts — protect against slow clients and runaway queries.
   readTimeout: "30s"

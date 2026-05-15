@@ -1,17 +1,15 @@
 # ── Stage 1: Build ────────────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev
-
 WORKDIR /build
 
 # Cache dependencies first (layer changes rarely)
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build
+# Copy source and build (pure Go — no cgo needed, modernc.org/sqlite is native)
 COPY . .
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /build/magnitude ./cmd/server/main.go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/magnitude ./cmd/server/main.go
 
 # ── Stage 2: Production ──────────────────────────────────────────────────────
 FROM alpine:3.20

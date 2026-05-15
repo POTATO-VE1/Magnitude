@@ -3,7 +3,7 @@ services:
     build: .
     container_name: magnitude-vectordb
     ports:
-      - "8443:8443"                  # HTTPS API
+      - "8080:8080"                  # HTTP API (configure TLS in config.yaml for HTTPS)
       - "127.0.0.1:9090:9090"       # Metrics + pprof (localhost only)
     volumes:
       - vectordb-data:/app/data
