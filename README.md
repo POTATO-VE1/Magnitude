@@ -9,17 +9,21 @@ A fast, self-hosted vector database written in Go with a built-in Web UI for sem
 
 ### 1. Build and Run the Server
 
-**Native (Go 1.25+):**
+First, clone the repository:
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
+```
+
+**Native (Go 1.25+):**
+```bash
 make build
 make run    # Server starts on http://localhost:8080
 ```
 
 **Docker:**
 ```bash
-docker compose up --build -d
+docker compose up --build -d  # Server starts on http://localhost:8080
 ```
 
 ### 2. Install the Client & UI
@@ -38,15 +42,22 @@ pip install -e ".[all]"
 
 Download a sample dataset (e.g., MS-COCO) and ingest it:
 
+**Option A: Quick Test (~5k images, 1GB)**
 ```bash
-# Download 5,000 sample images
 wget http://images.cocodataset.org/zips/val2017.zip
 unzip val2017.zip -d ./images
-
-# Ingest into VectorDB
 magnitude-ingest --dir ./images/val2017 --host http://localhost:8080
+```
 
-# Start the Web UI
+**Option B: Full Scale Test (~118k images, 18GB)**
+```bash
+wget http://images.cocodataset.org/zips/train2017.zip
+unzip train2017.zip -d ./images
+magnitude-ingest --dir ./images/train2017 --host http://localhost:8080 --batch-size 64
+```
+
+**Start the Web UI:**
+```bash
 magnitude-ui
 ```
 Open **http://localhost:3333** to search your images using text queries (e.g., "a red car").

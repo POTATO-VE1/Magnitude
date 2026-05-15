@@ -10,6 +10,8 @@ void l2_batch_avx2(const float* query, const float* matrix, int n, int dim, floa
 import "C"
 import "unsafe"
 
+const simdEnabled = true
+
 // L2BatchSIMD computes L2 squared distance in batch using AVX2.
 func L2BatchSIMD(query, matrix []float32, n, dim int, results []float32) {
 	C.l2_batch_avx2(

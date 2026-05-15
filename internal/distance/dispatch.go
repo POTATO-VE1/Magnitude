@@ -5,8 +5,8 @@ import "golang.org/x/sys/cpu"
 var useAVX2 bool
 
 func init() {
-	// Only enable AVX2 path if both AVX2 and FMA are supported
-	useAVX2 = cpu.X86.HasAVX2 && cpu.X86.HasFMA
+	// Only enable AVX2 path if SIMD is built-in and both AVX2 and FMA are supported
+	useAVX2 = simdEnabled && cpu.X86.HasAVX2 && cpu.X86.HasFMA
 }
 
 // L2Batch computes L2 squared distance between query and n vectors in matrix.
