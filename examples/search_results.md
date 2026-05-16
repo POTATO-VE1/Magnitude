@@ -1,6 +1,6 @@
 # Example Search Results
 
-These are real queries run against a 5,000-image COCO 2017 validation corpus using Magnitude + CLIP (ViT-B/32).
+These are real queries run against a 5,000-image COCO 2017 validation corpus using Magnitude + SigLIP (google/siglip-base-patch16-224).
 
 ---
 
@@ -49,4 +49,4 @@ Top 5 results:
 ## Performance Note
 
 All queries above executed in under 5ms against 5K indexed vectors (HNSW ef=64).
-Ingest of the full 5K COCO validation set took approximately 8 minutes on a standard laptop (batch-size=16, CLIP ViT-B/32).
+Ingest of the full 5K COCO validation set took approximately 8 minutes on a standard laptop (batch-size=16, SigLIP google/siglip-base-patch16-224).

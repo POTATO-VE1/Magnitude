@@ -13,7 +13,7 @@ Usage:
 """
 
 from magnitude.client import VectorDBClient
-from magnitude.embedder import CLIPEmbedder
+from magnitude.embedder import SigLIPEmbedder
 from magnitude.exceptions import (
     MagnitudeError,
     MagnitudeConnectionError,
@@ -24,7 +24,7 @@ from magnitude.exceptions import (
 __version__ = "0.1.0"
 __all__ = [
     "VectorDBClient",
-    "CLIPEmbedder",
+    "SigLIPEmbedder",
     "MagnitudeError",
     "MagnitudeConnectionError",
     "CollectionNotFoundError",

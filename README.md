@@ -68,9 +68,9 @@ Open **http://localhost:3333** to search your images using text queries (e.g., "
 ### Python
 
 ```python
-from magnitude import VectorDBClient, CLIPEmbedder
+from magnitude import VectorDBClient, SigLIPEmbedder
 
-embedder = CLIPEmbedder()
+embedder = SigLIPEmbedder()
 client = VectorDBClient("http://localhost:8080")
 
 col = client.create_collection("my-images", dimension=768)

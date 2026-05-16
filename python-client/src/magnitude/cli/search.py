@@ -174,7 +174,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        from magnitude import VectorDBClient, CLIPEmbedder
+        from magnitude import VectorDBClient, SigLIPEmbedder
     except ImportError:
         print("Error: Install with pip install magnitude-client[all]")
         sys.exit(1)
@@ -188,7 +188,7 @@ def main() -> None:
 
     print("Loading CLIP model (one-time)...")
     t0 = time.time()
-    embedder = CLIPEmbedder()
+    embedder = SigLIPEmbedder()
     client = VectorDBClient(args.host, api_key=args.api_key)
     print(f"Model loaded in {time.time() - t0:.1f}s")
 

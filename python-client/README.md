@@ -9,7 +9,7 @@ Python client for the [Magnitude](https://github.com/POTATO-VE1/Magnitude) vecto
 pip install magnitude-client
 ```
 
-**With CLIP embedding support:**
+**With SigLIP embedding support:**
 ```bash
 pip install magnitude-client[embed] --extra-index-url https://download.pytorch.org/whl/cpu
 ```
@@ -31,7 +31,7 @@ from magnitude import VectorDBClient
 client = VectorDBClient("http://localhost:8080")
 
 # Create a collection
-col = client.create_collection("my-images", dimension=512)
+col = client.create_collection("my-images", dimension=768)
 
 # Insert vectors
 client.insert(
@@ -51,12 +51,12 @@ for r in results:
     print(f"ID: {r.id}, Score: {r.score:.4f}, File: {r.metadata.get('filename')}")
 ```
 
-## CLIP Image Search
+## SigLIP Image Search
 
 ```python
-from magnitude import VectorDBClient, CLIPEmbedder
+from magnitude import VectorDBClient, SigLIPEmbedder
 
-embedder = CLIPEmbedder()
+embedder = SigLIPEmbedder()
 client = VectorDBClient("http://localhost:8080")
 
 # Embed and insert images
@@ -99,9 +99,9 @@ Main client class.
 - `delete_vector(collection_id, vector_id)` → `None`
 - `health()` → `bool`
 
-### `CLIPEmbedder(model_name="clip-ViT-B-32")`
+### `SigLIPEmbedder(model_name="google/siglip-base-patch16-224")`
 
-CLIP embedding utilities. Requires `pip install magnitude-client[embed]`.
+SigLIP embedding utilities. Requires `pip install magnitude-client[embed]`.
 
 #### Methods
 

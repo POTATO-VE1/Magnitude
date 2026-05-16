@@ -12,7 +12,7 @@ requires-python = ">=3.9"
 authors = [
     { name = "Magnitude Team" },
 ]
-keywords = ["vector-database", "embeddings", "clip", "semantic-search", "similarity-search"]
+keywords = ["vector-database", "embeddings", "siglip", "semantic-search", "similarity-search"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

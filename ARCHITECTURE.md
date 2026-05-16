@@ -7,7 +7,7 @@
 │                   CLIENT LAYER                       │
 │                                                      │
 │  ┌─────────────────┐     ┌──────────────────────┐   │
-│  │  Go HTTP Client │     │  Python CLIP Client  │   │
+│  │  Go HTTP Client │     │  Python SigLIP Client│   │
 │  │  pkg/client/    │     │  python-client/      │   │
 │  └────────┬────────┘     └──────────┬───────────┘   │
 │           │                         │               │
@@ -123,17 +123,17 @@ Vector quantisation utilities for memory-efficient storage.
 Typed Go HTTP client wrapping all V2 API endpoints. Intended for use by Go applications embedding Magnitude as a dependency.
 
 ### `python-client/`
-- **embedder.py**: CLIP embedding wrapper using `sentence-transformers` (`clip-ViT-B-32`).
-- **ingest.py**: Batch-encodes images using CLIP, sends embeddings to the Go server via REST. Shows Rich progress bar.
-- **search.py**: Encodes a text query with CLIP, queries the server for top-k results, renders them in a local HTML lightbox auto-opened in the browser.
+- **embedder.py**: SigLIP embedding wrapper using `transformers` (`google/siglip-base-patch16-224`).
+- **ingest.py**: Batch-encodes images using SigLIP, sends embeddings to the Go server via REST. Shows Rich progress bar.
+- **search.py**: Encodes a text query with SigLIP, queries the server for top-k results, renders them in a local HTML lightbox auto-opened in the browser.
 - **vectordb_client.py**: Python HTTP client wrapping the V2 API.
 
 ## Data Flow — Ingestion
 
 ```
 Image file on disk
-    → Python CLIP encoder (sentence-transformers, embedder.py)
-    → 512-dim float32 vector
+    → Python SigLIP encoder (transformers, embedder.py)
+    → 768-dim float32 vector
     → POST /api/v2/tenants/{t}/databases/{d}/collections/{id}/add (REST)
     → Go server receives (rate limited, authenticated)
     → Written to WAL (storage/wal.go)
@@ -145,8 +145,8 @@ Image file on disk
 
 ```
 Natural language query string
-    → Python CLIP encoder (same model, text branch)
-    → 512-dim float32 vector
+    → Python SigLIP encoder (same model, text branch)
+    → 768-dim float32 vector
     → POST /api/v2/tenants/{t}/databases/{d}/collections/{id}/query (REST)
     → Go server: Index.Search(ctx, query_vec, k, nprobe)
     → Returns top-k (id, distance, score) triples
@@ -171,5 +171,5 @@ For datasets >1K vectors, HNSW delivers O(log n) query time vs O(n) for brute-fo
 **Why SQLite for metadata?**
 Magnitude is designed to be self-contained. SQLite in WAL mode handles concurrent reads well and requires zero operational overhead — no separate DB process to manage.
 
-**Why CLIP for embeddings?**
-CLIP maps both text and images into the same embedding space, enabling natural language queries over image corpora without training data or fine-tuning.
+**Why SigLIP for embeddings?**
+SigLIP maps both text and images into the same embedding space, enabling natural language queries over image corpora without training data or fine-tuning.

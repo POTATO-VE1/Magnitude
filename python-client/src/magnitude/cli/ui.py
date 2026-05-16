@@ -30,7 +30,7 @@ except ImportError:
     )
     sys.exit(1)
 
-from magnitude.embedder import CLIPEmbedder
+from magnitude.embedder import SigLIPEmbedder
 
 app = FastAPI(title="Magnitude")
 
@@ -52,7 +52,7 @@ def startup_event():
     global embedder, client, col_id
     print("Loading CLIP model... (this may take a few seconds)")
     t0 = time.time()
-    embedder = CLIPEmbedder()
+    embedder = SigLIPEmbedder()
     print(f"Model loaded in {time.time() - t0:.1f}s")
 
     client = VectorDBClient("http://localhost:8080")
