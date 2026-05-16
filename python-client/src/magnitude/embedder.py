@@ -28,7 +28,7 @@ class CLIPEmbedder:
         >>> image_vecs = embedder.embed_images(["photo1.jpg", "photo2.jpg"])
     """
 
-    def __init__(self, model_name: str = "clip-ViT-B-32"):
+    def __init__(self, model_name: str = "google/siglip-base-patch16-224"):
         try:
             from sentence_transformers import SentenceTransformer
             import torch

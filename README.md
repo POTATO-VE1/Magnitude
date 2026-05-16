@@ -34,8 +34,7 @@ Requires Python 3.9+. We use `--extra-index-url` to install CPU-only PyTorch to 
 cd python-client
 python3 -m venv .venv
 source .venv/bin/activate
-pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu
-pip install -e ".[all]"
+pip install -c constraints-cpu.txt -e ".[all]"
 ```
 
 ### 3. Ingest Images & Search
@@ -74,7 +73,7 @@ from magnitude import VectorDBClient, CLIPEmbedder
 embedder = CLIPEmbedder()
 client = VectorDBClient("http://localhost:8080")
 
-col = client.create_collection("my-images", dimension=512)
+col = client.create_collection("my-images", dimension=768)
 vectors = embedder.embed_images(["cat.jpg", "dog.jpg"])
 client.insert(col.id, ids=[1, 2], vectors=vectors, metadata=[{"filename": "cat.jpg"}, {"filename": "dog.jpg"}])
 

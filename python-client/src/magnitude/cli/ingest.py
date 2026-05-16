@@ -59,7 +59,7 @@ def main() -> None:
     try:
         col = client.create_collection(
             args.collection,
-            dimension=512,
+            dimension=embedder.dimension,
             metric=args.metric,
             index_type=args.index_type,
         )
