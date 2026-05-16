@@ -91,10 +91,9 @@ class SigLIPEmbedder:
         ).to(self.device)
 
         with self._torch.no_grad():
-            # Use the full forward pass through the text tower + projection
-            text_embeds = self.model.text_model(**{k: v for k, v in inputs.items()})
-            # Pool: take the last hidden state and project
-            text_embeds = self.model.text_model(**{k: v for k, v in inputs.items()}).pooler_output
+            text_embeds = self.model.text_model(
+                **{k: v for k, v in inputs.items()}
+            ).pooler_output
 
         # The SigLIP text model already pools, but we must still L2-normalize
         # so cosine similarity works correctly against stored image vectors.
