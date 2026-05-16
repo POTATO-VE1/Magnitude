@@ -32,10 +32,11 @@ dependencies = [
 [project.optional-dependencies]
 embed = [
     "torch>=2.0.0",
-    "sentence-transformers>=2.5.1",
+    "transformers>=4.41.0",
     "Pillow>=10.2.0",
     "sentencepiece>=0.2.0",
     "protobuf>=3.20.0",
+    "numpy>=1.20.0",
 ]
 cli = [
     "rich>=13.7.0",
