@@ -104,3 +104,66 @@ func TestHNSW_RecallAt10(t *testing.T) {
 		t.Errorf("recall %.4f < threshold %.2f", avgRecall, minRecall)
 	}
 }
+
+func TestHNSW_Concurrency(t *testing.T) {
+	const (
+		dim        = 64
+		m          = 16
+		efConstruction = 100
+		efSearch   = 50
+		numVectors = 200
+		k          = 5
+		metric     = "l2"
+	)
+
+	rng := rand.New(rand.NewSource(123))
+	vectors := make([][]float32, numVectors)
+	for i := range vectors {
+		vec := make([]float32, dim)
+		for j := range vec {
+			vec[j] = rng.Float32()
+		}
+		vectors[i] = vec
+	}
+
+	hnswIdx, err := NewHNSWIndex(dim, m, efConstruction, efSearch, metric)
+	if err != nil {
+		t.Fatalf("NewHNSWIndex: %v", err)
+	}
+	for i, vec := range vectors {
+		if err := hnswIdx.Insert(uint64(i), vec); err != nil {
+			t.Fatalf("hnsw.Insert(%d): %v", i, err)
+		}
+	}
+
+	ctx := context.Background()
+
+	// Spin up concurrent readers
+	const numWorkers = 20
+	const queriesPerWorker = 50
+	errChan := make(chan error, numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		go func(workerID int) {
+			localRng := rand.New(rand.NewSource(int64(456 + workerID)))
+			for q := 0; q < queriesPerWorker; q++ {
+				query := make([]float32, dim)
+				for j := range query {
+					query[j] = localRng.Float32()
+				}
+				_, err := hnswIdx.Search(ctx, query, k, 0)
+				if err != nil {
+					errChan <- err
+					return
+				}
+			}
+			errChan <- nil
+		}(w)
+	}
+
+	for w := 0; w < numWorkers; w++ {
+		if err := <-errChan; err != nil {
+			t.Errorf("Concurrent search failed: %v", err)
+		}
+	}
+}

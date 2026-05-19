@@ -61,8 +61,13 @@ type HNSWIndex struct {
 	deleted        map[int]bool // soft-delete tombstones by internal nodeIdx
 	snapshotPath   string       // file path for snapshot persistence
 	snapshotSeqID  uint64       // WAL seqID at last snapshot time
-	searchGen      uint64       // monotonically increasing search generation
-	visited        []uint64     // visited[nodeIdx] == searchGen means visited
+}
+
+// visitedPool is a sync.Pool of visited tracker maps to avoid allocation overhead during searches.
+var visitedPool = sync.Pool{
+	New: func() any {
+		return make(map[int]bool, 1024)
+	},
 }
 
 // NewHNSWIndex creates a new HNSW index.
@@ -104,7 +109,6 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		idToNode:       make(map[uint64]int),
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
-		visited:        make([]uint64, 1024),
 	}, nil
 }
 
@@ -127,13 +131,7 @@ func (h *HNSWIndex) randomLevel() int {
 	return level
 }
 
-// ensureVisited grows the visited slice if needed to cover all nodes.
-// Must be called with h.mu held (at least RLock).
-func (h *HNSWIndex) ensureVisited() {
-	if len(h.visited) < len(h.nodes) {
-		h.visited = make([]uint64, len(h.nodes))
-	}
-}
+
 
 // Insert adds a vector with the given ID into the HNSW graph.
 func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
@@ -157,8 +155,6 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 			return vdberrors.Newf(vdberrors.ErrDuplicateID, "vector ID %d already exists", id)
 		}
 	}
-
-	h.ensureVisited()
 
 	// Assign level
 	level := h.randomLevel()
@@ -197,8 +193,15 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if topLayer > h.maxLevel {
 		topLayer = h.maxLevel
 	}
+	visited := visitedPool.Get().(map[int]bool)
+	defer func() {
+		clear(visited)
+		visitedPool.Put(visited)
+	}()
+
 	for lc := topLayer; lc >= 0; lc-- {
-		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc)
+		clear(visited)
+		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, visited)
 		// Select neighbors using the diversity heuristic
 		maxConn := h.m
 		if lc == 0 {
@@ -258,9 +261,6 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 		ef = k
 	}
 
-	// Ensure visited slice is large enough for this search
-	h.ensureVisited()
-
 	// Phase 1: Greedy descent from top to layer 1
 	ep := h.entryPoint
 	for lc := h.maxLevel; lc >= 1; lc-- {
@@ -272,8 +272,14 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 		ep = h.greedyClosest(query, ep, lc)
 	}
 
+	visited := visitedPool.Get().(map[int]bool)
+	defer func() {
+		clear(visited)
+		visitedPool.Put(visited)
+	}()
+
 	// Phase 2: Beam search at layer 0
-	candidates := h.searchLayer(ctx, query, ep, ef, 0)
+	candidates := h.searchLayer(ctx, query, ep, ef, 0, visited)
 
 	// Extract top-k, filtering deleted nodes
 	var results []index.SearchResult
@@ -423,10 +429,8 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 
 // searchLayer performs beam search at a single layer starting from ep.
 // Returns candidates sorted by distance ascending (closest first).
-func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int) []candidate {
-	h.searchGen++
-	gen := h.searchGen
-	h.visited[ep] = gen
+func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, visited map[int]bool) []candidate {
+	visited[ep] = true
 
 	epDist := h.distFn(query, h.nodes[ep].vector)
 
@@ -454,10 +458,10 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 					default:
 					}
 				}
-				if h.visited[friendIdx] == gen {
+				if visited[friendIdx] {
 					continue
 				}
-				h.visited[friendIdx] = gen
+				visited[friendIdx] = true
 
 				d := h.distFn(query, h.nodes[friendIdx].vector)
 				friend := candidate{nodeIdx: friendIdx, dist: d}

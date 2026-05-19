@@ -519,10 +519,22 @@ func (h *Handler) SearchVectorsScoped(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Sort and take Top-K
+		// Sort by distance ascending first so the closest duplicate is kept
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Distance < results[j].Distance
 		})
+
+		// Deduplicate by ID
+		seen := make(map[uint64]bool)
+		deduped := make([]index.SearchResult, 0, len(results))
+		for _, res := range results {
+			if !seen[res.ID] {
+				seen[res.ID] = true
+				deduped = append(deduped, res)
+			}
+		}
+		results = deduped
+
 		if len(results) > req.K {
 			results = results[:req.K]
 		}

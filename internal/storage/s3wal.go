@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,14 +114,19 @@ func (w *S3WAL) loadOrCreateManifest(ctx context.Context) error {
 	key := w.manifestKey()
 	data, err := w.store.Get(ctx, w.config.Bucket, key)
 	if err != nil {
-		// Assume not found — create new manifest
-		w.manifest = &Manifest{
-			Fragments: make([]Fragment, 0),
-			HeadSeq:   0,
-			CursorSeq: 0,
-			Version:   1,
+		// Only assume not found if error explicitly indicates object is missing.
+		// Otherwise, bubble the error up to prevent manifest truncation.
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "nosuchkey") || strings.Contains(errMsg, "404") {
+			w.manifest = &Manifest{
+				Fragments: make([]Fragment, 0),
+				HeadSeq:   0,
+				CursorSeq: 0,
+				Version:   1,
+			}
+			return w.writeManifest(ctx)
 		}
-		return w.writeManifest(ctx)
+		return fmt.Errorf("s3wal: failed to get manifest: %w", err)
 	}
 
 	var m Manifest
