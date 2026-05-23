@@ -31,6 +31,7 @@ import (
 	"github.com/POTATO-VE1/Magnitude/internal/cluster"
 	"github.com/POTATO-VE1/Magnitude/internal/collection"
 	"github.com/POTATO-VE1/Magnitude/internal/config"
+	"github.com/POTATO-VE1/Magnitude/internal/distance"
 	"github.com/POTATO-VE1/Magnitude/internal/events"
 	"github.com/POTATO-VE1/Magnitude/internal/failure"
 	"github.com/POTATO-VE1/Magnitude/internal/gossip"
@@ -68,6 +69,8 @@ func main() {
 		"index_type", cfg.Index.Type,
 		"data_dir", cfg.Storage.DataDir,
 	)
+
+	distance.LogCPUFeatures()
 
 	// Security warnings
 	if len(cfg.Auth.KeyHashes) == 0 {
