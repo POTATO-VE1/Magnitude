@@ -73,3 +73,10 @@ type ExportedVector struct {
 	Vector []float32
 }
 
+// FilteredSearcher is an optional interface for indexes that support
+// pre-filtered search. Instead of searching then post-filtering results,
+// the index only explores nodes whose IDs are in the valid set.
+// Checked via type assertion: if fs, ok := idx.(FilteredSearcher); ok { ... }
+type FilteredSearcher interface {
+	SearchFiltered(ctx context.Context, query []float32, k, nprobe int, validIDs map[uint64]bool) ([]SearchResult, error)
+}
