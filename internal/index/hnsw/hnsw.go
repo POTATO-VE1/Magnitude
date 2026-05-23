@@ -425,6 +425,9 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 		changed = false
 		if layer < len(h.nodes[ep].friends) {
 			for _, friendIdx := range h.nodes[ep].friends[layer] {
+				if h.deleted[friendIdx] {
+					continue
+				}
 				d := h.distFn(query, h.nodeVector(friendIdx))
 				if d < epDist {
 					ep = friendIdx
