@@ -161,19 +161,32 @@ func isTrustedProxy(remoteAddr string) bool {
 
 // ── Multi-Tenancy Rate Limiter ──────────────────────────────────────────────
 
+type tenantLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 // TenantRateLimiter provides per-tenant rate limiting using quotas from SysDB.
 type TenantRateLimiter struct {
 	mu       sync.Mutex
-	limiters map[string]*rate.Limiter // tenantID → limiter
+	limiters map[string]*tenantLimiterEntry
 	sysdb    *metadata.SysDB
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
 // NewTenantRateLimiter creates a new TenantRateLimiter.
+// Starts a background goroutine that evicts idle entries every 3 minutes.
 func NewTenantRateLimiter(sysdb *metadata.SysDB) *TenantRateLimiter {
-	return &TenantRateLimiter{
-		limiters: make(map[string]*rate.Limiter),
+	ctx, cancel := context.WithCancel(context.Background())
+	rl := &TenantRateLimiter{
+		limiters: make(map[string]*tenantLimiterEntry),
 		sysdb:    sysdb,
+		cancel:   cancel,
+		done:     make(chan struct{}),
 	}
+	go rl.cleanupLoop(ctx)
+	return rl
 }
 
 // getOrCreate returns the rate limiter for a tenant, fetching the quota if needed.
@@ -181,8 +194,9 @@ func (rl *TenantRateLimiter) getOrCreate(tenantID string) *rate.Limiter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	if limiter, exists := rl.limiters[tenantID]; exists {
-		return limiter
+	if entry, exists := rl.limiters[tenantID]; exists {
+		entry.lastSeen = time.Now()
+		return entry.limiter
 	}
 
 	// Default fallback quota
@@ -197,8 +211,39 @@ func (rl *TenantRateLimiter) getOrCreate(tenantID string) *rate.Limiter {
 	}
 
 	limiter := rate.NewLimiter(rate.Limit(rps), burst)
-	rl.limiters[tenantID] = limiter
+	rl.limiters[tenantID] = &tenantLimiterEntry{limiter: limiter, lastSeen: time.Now()}
 	return limiter
+}
+
+// cleanupLoop evicts idle tenant entries every 3 minutes.
+func (rl *TenantRateLimiter) cleanupLoop(ctx context.Context) {
+	defer close(rl.done)
+	ticker := time.NewTicker(3 * time.Minute)
+	defer ticker.Stop()
+
+	const idleTimeout = 5 * time.Minute
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now()
+			for id, entry := range rl.limiters {
+				if now.Sub(entry.lastSeen) > idleTimeout {
+					delete(rl.limiters, id)
+				}
+			}
+			rl.mu.Unlock()
+		}
+	}
+}
+
+// Stop halts the cleanup goroutine.
+func (rl *TenantRateLimiter) Stop() {
+	rl.cancel()
+	<-rl.done
 }
 
 // Middleware enforces the rate limit for the authenticated tenant.
