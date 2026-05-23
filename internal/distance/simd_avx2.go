@@ -9,12 +9,21 @@ package distance
 #include "simd_avx2.h"
 */
 import "C"
-import "unsafe"
+import (
+	"math"
+	"unsafe"
+)
 
 // l2BatchSIMD computes L2 squared distance using AVX2 intrinsics via CGO.
 func l2BatchSIMD(query, matrix []float32, n, dim int, results []float32) {
+	if n <= 0 || dim <= 0 {
+		return
+	}
+	if n > math.MaxInt32 || dim > math.MaxInt32 {
+		L2BatchPure(query, matrix, n, dim, results)
+		return
+	}
 	if len(query) < dim || len(matrix) < n*dim || len(results) < n {
-		// Bounds check failed — fall back to pure Go to avoid segfault
 		L2BatchPure(query, matrix, n, dim, results)
 		return
 	}
@@ -28,6 +37,13 @@ func l2BatchSIMD(query, matrix []float32, n, dim int, results []float32) {
 
 // dotBatchSIMD computes dot product using AVX2 intrinsics via CGO.
 func dotBatchSIMD(query, matrix []float32, n, dim int, results []float32) {
+	if n <= 0 || dim <= 0 {
+		return
+	}
+	if n > math.MaxInt32 || dim > math.MaxInt32 {
+		DotBatchPure(query, matrix, n, dim, results)
+		return
+	}
 	if len(query) < dim || len(matrix) < n*dim || len(results) < n {
 		DotBatchPure(query, matrix, n, dim, results)
 		return
@@ -42,6 +58,13 @@ func dotBatchSIMD(query, matrix []float32, n, dim int, results []float32) {
 
 // cosineBatchSIMD computes cosine distance using AVX2 intrinsics via CGO.
 func cosineBatchSIMD(query, matrix []float32, n, dim int, queryNorm float32, results []float32) {
+	if n <= 0 || dim <= 0 {
+		return
+	}
+	if n > math.MaxInt32 || dim > math.MaxInt32 {
+		CosineBatchPure(query, matrix, n, dim, results)
+		return
+	}
 	if len(query) < dim || len(matrix) < n*dim || len(results) < n {
 		CosineBatchPure(query, matrix, n, dim, results)
 		return
