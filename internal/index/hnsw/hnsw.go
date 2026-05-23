@@ -495,7 +495,12 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 					if i%100 == 0 {
 						select {
 						case <-ctx.Done():
-							return nil
+							// Return partial results instead of nil
+							sorted := make([]candidate, results.Len())
+							for j := len(sorted) - 1; j >= 0; j-- {
+								sorted[j] = heap.Pop(results).(candidate)
+							}
+							return sorted
 						default:
 						}
 					}
