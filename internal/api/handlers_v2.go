@@ -254,6 +254,10 @@ func (h *Handler) CreateCollectionScoped(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, Envelope{Error: "dimension must be > 0"})
 		return
 	}
+	if req.Dimension > 65536 {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "dimension must be <= 65536"})
+		return
+	}
 	if req.Metric == "" {
 		req.Metric = "l2"
 	}
@@ -467,6 +471,9 @@ func (h *Handler) SearchVectorsScoped(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.K <= 0 {
 		req.K = 10
+	}
+	if req.K > 10000 {
+		req.K = 10000
 	}
 
 	var results []index.SearchResult

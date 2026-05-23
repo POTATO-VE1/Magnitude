@@ -142,6 +142,10 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, Envelope{Error: "dimension must be > 0"})
 		return
 	}
+	if req.Dimension > 65536 {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "dimension must be <= 65536"})
+		return
+	}
 	if req.Metric == "" {
 		req.Metric = "l2"
 	}
@@ -303,6 +307,9 @@ func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.K <= 0 {
 		req.K = 10
+	}
+	if req.K > 10000 {
+		req.K = 10000
 	}
 
 	results, err := h.manager.SearchVectors(r.Context(), id, req.Query, req.K, req.Nprobe, req.Filter)
