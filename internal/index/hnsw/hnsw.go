@@ -70,10 +70,19 @@ func (h *HNSWIndex) nodeVector(nodeIdx int) []float32 {
 	return h.vectorSlab[offset : offset+h.dim]
 }
 
-// visitedPool is a sync.Pool of visited tracker maps to avoid allocation overhead during searches.
+// visitedTracker is a bitmap-based visited tracker that avoids map overhead.
+// Uses a generation counter to avoid clearing the entire bitmap on each search.
+type visitedTracker struct {
+	generations []uint32
+	currentGen  uint32
+}
+
+// visitedPool is a sync.Pool of visited tracker bitmaps to avoid allocation overhead during searches.
 var visitedPool = sync.Pool{
 	New: func() any {
-		return make(map[int]bool, 1024)
+		return &visitedTracker{
+			generations: make([]uint32, 1024),
+		}
 	},
 }
 
@@ -203,15 +212,15 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if topLayer > h.maxLevel {
 		topLayer = h.maxLevel
 	}
-	visited := visitedPool.Get().(map[int]bool)
+	vt := visitedPool.Get().(*visitedTracker)
 	defer func() {
-		clear(visited)
-		visitedPool.Put(visited)
+		vt.currentGen++
+		visitedPool.Put(vt)
 	}()
 
 	for lc := topLayer; lc >= 0; lc-- {
-		clear(visited)
-		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, visited)
+		vt.currentGen++
+		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, vt)
 		// Select neighbors using the diversity heuristic
 		maxConn := h.m
 		if lc == 0 {
@@ -282,14 +291,14 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 		ep = h.greedyClosest(query, ep, lc)
 	}
 
-	visited := visitedPool.Get().(map[int]bool)
+	vt := visitedPool.Get().(*visitedTracker)
 	defer func() {
-		clear(visited)
-		visitedPool.Put(visited)
+		vt.currentGen++
+		visitedPool.Put(vt)
 	}()
 
 	// Phase 2: Beam search at layer 0
-	candidates := h.searchLayer(ctx, query, ep, ef, 0, visited)
+	candidates := h.searchLayer(ctx, query, ep, ef, 0, vt)
 
 	// Extract top-k, filtering deleted nodes
 	var results []index.SearchResult
@@ -442,8 +451,14 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 
 // searchLayer performs beam search at a single layer starting from ep.
 // Returns candidates sorted by distance ascending (closest first).
-func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, visited map[int]bool) []candidate {
-	visited[ep] = true
+func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, vt *visitedTracker) []candidate {
+	// Ensure tracker is large enough
+	if ep >= len(vt.generations) {
+		newGen := make([]uint32, ep+1024)
+		copy(newGen, vt.generations)
+		vt.generations = newGen
+	}
+	vt.generations[ep] = vt.currentGen
 
 	epDist := h.distFn(query, h.nodeVector(ep))
 
@@ -474,8 +489,14 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 			// Collect unvisited friends for batch distance computation
 			unvisited = unvisited[:0]
 			for _, friendIdx := range friends {
-				if !visited[friendIdx] {
-					visited[friendIdx] = true
+				// Grow tracker if needed
+				if friendIdx >= len(vt.generations) {
+					newGen := make([]uint32, friendIdx+1024)
+					copy(newGen, vt.generations)
+					vt.generations = newGen
+				}
+				if vt.generations[friendIdx] != vt.currentGen {
+					vt.generations[friendIdx] = vt.currentGen
 					unvisited = append(unvisited, friendIdx)
 				}
 			}
