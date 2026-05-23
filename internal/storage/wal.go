@@ -14,6 +14,7 @@ import (
 	"math"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/POTATO-VE1/Magnitude/internal/errors"
 	_ "modernc.org/sqlite"
@@ -193,13 +194,16 @@ func (w *SQLiteWAL) Path() string {
 }
 
 // encodeVectorBinary encodes a float32 slice as little-endian bytes.
-// This is ~10x faster than JSON encoding for float32 arrays.
+// Uses unsafe reinterpretation on little-endian systems to avoid allocation.
+// The returned byte slice shares memory with the input — callers must not
+// modify the float32 slice until the bytes are written to SQLite.
 func encodeVectorBinary(v []float32) []byte {
-	buf := make([]byte, len(v)*4)
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(f))
+	if len(v) == 0 {
+		return nil
 	}
-	return buf
+	// On little-endian (all Go targets), float32 and bytes share the same layout.
+	// This avoids allocating a new buffer and element-wise encoding.
+	return unsafe.Slice((*byte)(unsafe.Pointer(&v[0])), len(v)*4)
 }
 
 // decodeVectorBinary decodes little-endian bytes back to a float32 slice.
