@@ -650,6 +650,20 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 			return nil, err
 		}
 	} else {
+		// Try pre-filtered search first (HNSW only explores valid nodes)
+		if fs, ok := col.idx.(index.FilteredSearcher); ok {
+			validIDs, err := col.sysdb.GetFilteredVectorIDs(collectionID, filter)
+			if err == nil && len(validIDs) > 0 {
+				results, err = fs.SearchFiltered(ctx, query, k, nprobe, validIDs)
+				if err != nil {
+					return nil, err
+				}
+				// Pre-filtered results are already valid — skip post-filter
+				goto populateScores
+			}
+		}
+
+		// Fallback: post-filter (current behavior for non-HNSW indexes)
 		searchK := k * 10
 		maxK := col.idx.Len()
 		if searchK > maxK {
@@ -685,6 +699,7 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 		results = filtered
 	}
 
+populateScores:
 	return results, nil
 }
 
