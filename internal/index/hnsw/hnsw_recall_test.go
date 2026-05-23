@@ -107,13 +107,13 @@ func TestHNSW_RecallAt10(t *testing.T) {
 
 func TestHNSW_Concurrency(t *testing.T) {
 	const (
-		dim        = 64
-		m          = 16
+		dim            = 64
+		m              = 16
 		efConstruction = 100
-		efSearch   = 50
-		numVectors = 200
-		k          = 5
-		metric     = "l2"
+		efSearch       = 50
+		numVectors     = 200
+		k              = 5
+		metric         = "l2"
 	)
 
 	rng := rand.New(rand.NewSource(123))
@@ -165,5 +165,114 @@ func TestHNSW_Concurrency(t *testing.T) {
 		if err := <-errChan; err != nil {
 			t.Errorf("Concurrent search failed: %v", err)
 		}
+	}
+}
+
+func TestHNSW_SearchFiltered(t *testing.T) {
+	const (
+		dim            = 64
+		m              = 16
+		efConstruction = 200
+		efSearch       = 50
+		numVectors     = 500
+		k              = 5
+		metric         = "l2"
+	)
+
+	rng := rand.New(rand.NewSource(42))
+
+	// Generate vectors with "category" metadata (0 or 1)
+	vectors := make([][]float32, numVectors)
+	categories := make([]int, numVectors)
+	for i := range vectors {
+		vec := make([]float32, dim)
+		for j := range vec {
+			vec[j] = rng.Float32()
+		}
+		vectors[i] = vec
+		categories[i] = i % 2 // 50% are category 0, 50% are category 1
+	}
+
+	// Build HNSW index
+	hnswIdx, err := NewHNSWIndex(dim, m, efConstruction, efSearch, metric)
+	if err != nil {
+		t.Fatalf("NewHNSWIndex: %v", err)
+	}
+	for i, vec := range vectors {
+		if err := hnswIdx.Insert(uint64(i), vec); err != nil {
+			t.Fatalf("hnsw.Insert(%d): %v", i, err)
+		}
+	}
+
+	// Build flat index for ground truth (only category 0)
+	flatIdx, err := flat.NewFlatIndex(dim, metric)
+	if err != nil {
+		t.Fatalf("NewFlatIndex: %v", err)
+	}
+	validIDs := make(map[uint64]bool)
+	for i, vec := range vectors {
+		if categories[i] == 0 {
+			flatIdx.Insert(uint64(i), vec)
+			validIDs[uint64(i)] = true
+		}
+	}
+
+	// Test filtered search
+	query := vectors[0] // use first vector as query
+	ctx := context.Background()
+
+	filteredResults, err := hnswIdx.SearchFiltered(ctx, query, k, efSearch, validIDs)
+	if err != nil {
+		t.Fatalf("SearchFiltered: %v", err)
+	}
+
+	// Get ground truth from flat index
+	groundTruth, err := flatIdx.Search(ctx, query, k, 0)
+	if err != nil {
+		t.Fatalf("flat.Search: %v", err)
+	}
+
+	// Verify all filtered results are in the valid set
+	for _, r := range filteredResults {
+		if !validIDs[r.ID] {
+			t.Errorf("SearchFiltered returned ID %d which is not in valid set", r.ID)
+		}
+	}
+
+	// Verify we got results
+	if len(filteredResults) == 0 {
+		t.Error("SearchFiltered returned 0 results")
+	}
+
+	// Check recall (should be high since filter is 50%)
+	matches := 0
+	for _, r := range filteredResults {
+		for _, gt := range groundTruth {
+			if r.ID == gt.ID {
+				matches++
+				break
+			}
+		}
+	}
+	recall := float64(matches) / float64(len(groundTruth))
+	t.Logf("Filtered search recall: %.2f (%d/%d matches)", recall, matches, len(groundTruth))
+	if recall < 0.80 {
+		t.Errorf("recall %.2f < 0.80", recall)
+	}
+}
+
+func TestHNSW_SearchFiltered_EmptyFilter(t *testing.T) {
+	hnswIdx, err := NewHNSWIndex(64, 16, 200, 50, "l2")
+	if err != nil {
+		t.Fatalf("NewHNSWIndex: %v", err)
+	}
+	hnswIdx.Insert(1, make([]float32, 64))
+
+	results, err := hnswIdx.SearchFiltered(context.Background(), make([]float32, 64), 5, 50, map[uint64]bool{})
+	if err != nil {
+		t.Fatalf("SearchFiltered: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty filter, got %d", len(results))
 	}
 }
