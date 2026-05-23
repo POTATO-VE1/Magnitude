@@ -12,7 +12,7 @@ requires-python = ">=3.9"
 authors = [
     { name = "Magnitude Team" },
 ]
-keywords = ["vector-database", "embeddings", "siglip", "semantic-search", "similarity-search"]
+keywords = ["vector-database", "embeddings", "similarity-search", "semantic-search"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,7 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -46,9 +46,8 @@ ui = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
 ]
-all = [
-    "magnitude-client[embed,cli,ui]",
-]
+image-search = ["magnitude-client[embed,cli,ui]"]
+all = ["magnitude-client[embed,cli,ui]"]
 
 [project.urls]
 Homepage = "https://github.com/POTATO-VE1/Magnitude"
