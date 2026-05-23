@@ -987,13 +987,7 @@ func (m *Manager) GetVectorsMetadata(collectionID string, ids []uint64) (map[uin
 	col.mu.RLock()
 	defer col.mu.RUnlock()
 
-	result := make(map[uint64]map[string]any, len(ids))
-	for _, id := range ids {
-		if meta, err := col.sysdb.LoadVectorMetadata(collectionID, id); err == nil && len(meta) > 0 {
-			result[id] = meta
-		}
-	}
-	return result, nil
+	return col.sysdb.LoadVectorMetadataBatch(collectionID, ids)
 }
 
 // SnapshotCollection triggers an HNSW snapshot for a specific collection.
