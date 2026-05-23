@@ -180,37 +180,49 @@ func (idx *IVFIndex) Search(ctx context.Context, query []float32, k int, nprobe 
 			distances := make([]float32, 0, estimatedSize)
 			ids := make([]uint64, 0, estimatedSize)
 
-			for _, cd := range topCentroids {
-				list := idx.postingList[cd.Index]
-				if len(list) == 0 {
-					continue
-				}
-
-				var table []float32
-				if idx.usePQ {
+			if idx.usePQ {
+				// PQ path: per-vector distance table lookup
+				for _, cd := range topCentroids {
+					list := idx.postingList[cd.Index]
+					if len(list) == 0 {
+						continue
+					}
 					centroid := idx.kmeans.Centroids[cd.Index*idx.dim : (cd.Index+1)*idx.dim]
 					qRes := make([]float32, idx.dim)
 					for i := 0; i < idx.dim; i++ {
 						qRes[i] = query[i] - centroid[i]
 					}
-					table = idx.pq.BuildDistanceTable(qRes)
-				}
+					table := idx.pq.BuildDistanceTable(qRes)
 
-				for _, cid := range list {
-					row, exists := idx.idToRow[cid]
-					if !exists {
-						continue
-					}
-					ids = append(ids, cid)
-
-					if idx.usePQ {
+					for _, cid := range list {
+						row, exists := idx.idToRow[cid]
+						if !exists {
+							continue
+						}
+						ids = append(ids, cid)
 						codeOffset := row * idx.pq.M
 						codes := idx.pqCodes[codeOffset : codeOffset+idx.pq.M]
 						distances = append(distances, idx.pq.DistanceADC(table, codes))
-					} else {
-						v := idx.vectors[row*idx.dim : (row+1)*idx.dim]
-						distances = append(distances, idx.distFn(query, v))
 					}
+				}
+			} else {
+				// Non-PQ path: gather vectors then batch distance computation
+				batchVecs := make([]float32, 0, estimatedSize*idx.dim)
+				for _, cd := range topCentroids {
+					list := idx.postingList[cd.Index]
+					for _, cid := range list {
+						row, exists := idx.idToRow[cid]
+						if !exists {
+							continue
+						}
+						ids = append(ids, cid)
+						v := idx.vectors[row*idx.dim : (row+1)*idx.dim]
+						batchVecs = append(batchVecs, v...)
+					}
+				}
+				if len(ids) > 0 {
+					distances = make([]float32, len(ids))
+					distance.BatchDistance(query, batchVecs, len(ids), idx.dim, idx.metric, distances)
 				}
 			}
 			ivfResults = flat.TopK(distances, ids, k, idx.metric)
@@ -355,7 +367,7 @@ func (idx *IVFIndex) Rebuild() error {
 			codeOffset := i * idx.pq.M
 			codes := idx.pqCodes[codeOffset : codeOffset+idx.pq.M]
 			res, _ := idx.pq.Decode(codes)
-			
+
 			vecOffset := i * idx.dim
 			for d := 0; d < idx.dim; d++ {
 				allVecs[vecOffset+d] = oldCentroid[d] + res[d]
@@ -432,7 +444,7 @@ func (idx *IVFIndex) Rebuild() error {
 		}
 		idx.ids = make([]uint64, idx.capacity)
 	}
-	
+
 	if idx.usePQ {
 		copy(idx.pqCodes, newPQCodes)
 		idx.vectors = nil // explicitly free uncompressed array
