@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -408,7 +409,7 @@ func main() {
 		}
 
 		// SIGINT, SIGTERM, or server error → graceful shutdown
-		slog.Info("shutdown signal received", "signal", sig.String())
+		slog.Info("shutdown signal received")
 		break
 	}
 
