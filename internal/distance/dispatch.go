@@ -1,20 +1,21 @@
 package distance
 
-import "golang.org/x/sys/cpu"
-
-var useAVX2 bool
-
-func init() {
-	// Only enable AVX2 path if SIMD is built-in and both AVX2 and FMA are supported
-	useAVX2 = simdEnabled && cpu.X86.HasAVX2 && cpu.X86.HasFMA
+// L2Batch computes L2 squared distance between query and n vectors.
+func L2Batch(query, matrix []float32, n, dim int, results []float32) {
+	L2BatchPure(query, matrix, n, dim, results)
 }
 
-// L2Batch computes L2 squared distance between query and n vectors in matrix.
-// It uses AVX2 SIMD instructions if supported by the CPU.
-func L2Batch(query, matrix []float32, n, dim int, results []float32) {
-	if useAVX2 {
-		L2BatchSIMD(query, matrix, n, dim, results) // CGO AVX2 path
-	} else {
-		L2BatchPure(query, matrix, n, dim, results) // pure Go fallback
-	}
+// DotBatch computes dot product similarity of query with n vectors.
+func DotBatch(query, matrix []float32, n, dim int, results []float32) {
+	DotBatchPure(query, matrix, n, dim, results)
+}
+
+// CosineBatch computes cosine distance from query to n vectors.
+func CosineBatch(query, matrix []float32, n, dim int, results []float32) {
+	CosineBatchPure(query, matrix, n, dim, results)
+}
+
+// ManhattanBatch computes Manhattan (L1) distance from query to n vectors.
+func ManhattanBatch(query, matrix []float32, n, dim int, results []float32) {
+	ManhattanBatchPure(query, matrix, n, dim, results)
 }
