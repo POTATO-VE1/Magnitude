@@ -63,23 +63,9 @@ func (rl *RateLimiter) Allow(r *http.Request) bool {
 
 // getLimiter returns the rate limiter for the given IP, creating one if needed.
 func (rl *RateLimiter) getLimiter(ip string) *rate.Limiter {
-	// Fast path: read lock
-	rl.mu.RLock()
-	entry, exists := rl.limiters[ip]
-	rl.mu.RUnlock()
-
-	if exists {
-		rl.mu.Lock()
-		entry.lastSeen = time.Now()
-		rl.mu.Unlock()
-		return entry.limiter
-	}
-
-	// Slow path: write lock
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	// Double-check under write lock
 	if entry, exists := rl.limiters[ip]; exists {
 		entry.lastSeen = time.Now()
 		return entry.limiter
