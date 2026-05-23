@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/POTATO-VE1/Magnitude/internal/index"
 	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 )
 
@@ -60,6 +61,17 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 		srcCol.mu.RUnlock()
 		m.sysdb.DeleteCollection(newMeta.ID)
 		return nil, fmt.Errorf("fork: creating index for %q: %w", newName, err)
+	}
+
+	// Copy vectors from source index to new index
+	if exporter, ok := srcCol.idx.(index.VectorExporter); ok {
+		vectors := exporter.ExportVectors()
+		for _, v := range vectors {
+			if insertErr := newIdx.Insert(v.ID, v.Vector); insertErr != nil {
+				slog.Warn("fork: failed to insert vector", "id", v.ID, "error", insertErr)
+			}
+		}
+		slog.Info("fork: copied vectors", "count", len(vectors))
 	}
 
 	// Deep-copy vector metadata from source via SysDB
