@@ -51,8 +51,16 @@ type VectorMetadata map[string]any
 // ParseFilter parses a JSON filter map into a Filter struct.
 // Input: {"field1": {"$op": value}, "$or": [...]}
 func ParseFilter(raw map[string]any) (*Filter, error) {
+	return parseFilterDepth(raw, 10)
+}
+
+// parseFilterDepth is the recursive implementation with depth limiting.
+func parseFilterDepth(raw map[string]any, maxDepth int) (*Filter, error) {
 	if len(raw) == 0 {
 		return nil, nil
+	}
+	if maxDepth <= 0 {
+		return nil, fmt.Errorf("filter: maximum nesting depth exceeded")
 	}
 
 	f := &Filter{}
@@ -69,7 +77,7 @@ func ParseFilter(raw map[string]any) (*Filter, error) {
 				if !ok {
 					return nil, fmt.Errorf("filter: $and elements must be objects")
 				}
-				subFilter, err := ParseFilter(subMap)
+				subFilter, err := parseFilterDepth(subMap, maxDepth-1)
 				if err != nil {
 					return nil, err
 				}
@@ -87,7 +95,7 @@ func ParseFilter(raw map[string]any) (*Filter, error) {
 				if !ok {
 					return nil, fmt.Errorf("filter: $or elements must be objects")
 				}
-				subFilter, err := ParseFilter(subMap)
+				subFilter, err := parseFilterDepth(subMap, maxDepth-1)
 				if err != nil {
 					return nil, err
 				}
