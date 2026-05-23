@@ -541,37 +541,51 @@ func (s *SysDB) LoadVectorMetadataBatch(collectionID string, vectorIDs []uint64)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := "SELECT vector_id, meta_key, meta_value FROM vector_metadata WHERE collection_id = ? AND vector_id IN ("
-	args := make([]interface{}, len(vectorIDs)+1)
-	args[0] = collectionID
-	for i, id := range vectorIDs {
-		if i > 0 {
-			query += ","
-		}
-		query += "?"
-		args[i+1] = id
-	}
-	query += ")"
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("metadata: loading vector metadata batch: %w", err)
-	}
-	defer rows.Close()
-
 	result := make(map[uint64]map[string]any)
-	for rows.Next() {
-		var vid uint64
-		var key, value string
-		if err := rows.Scan(&vid, &key, &value); err != nil {
-			return nil, fmt.Errorf("metadata: scanning vector metadata batch: %w", err)
+	const maxBatch = 900 // below SQLite SQLITE_MAX_VARIABLE_NUMBER (999)
+
+	for start := 0; start < len(vectorIDs); start += maxBatch {
+		end := start + maxBatch
+		if end > len(vectorIDs) {
+			end = len(vectorIDs)
 		}
-		if result[vid] == nil {
-			result[vid] = make(map[string]any)
+		batch := vectorIDs[start:end]
+
+		query := "SELECT vector_id, meta_key, meta_value FROM vector_metadata WHERE collection_id = ? AND vector_id IN ("
+		args := make([]interface{}, len(batch)+1)
+		args[0] = collectionID
+		for i, id := range batch {
+			if i > 0 {
+				query += ","
+			}
+			query += "?"
+			args[i+1] = id
 		}
-		result[vid][key] = value
+		query += ")"
+
+		rows, err := s.db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("metadata: loading vector metadata batch: %w", err)
+		}
+		for rows.Next() {
+			var vid uint64
+			var key, value string
+			if err := rows.Scan(&vid, &key, &value); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("metadata: scanning vector metadata batch: %w", err)
+			}
+			if result[vid] == nil {
+				result[vid] = make(map[string]any)
+			}
+			result[vid][key] = value
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 // LoadAllVectorMetadata loads all metadata for all vectors in a collection.
