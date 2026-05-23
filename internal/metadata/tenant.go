@@ -3,9 +3,10 @@
 // ChromaDB Lesson 10: "Tenant → Database → Collection is the right hierarchy."
 //
 // Every API call is scoped to:
-//   Tenant (billing/quota boundary) →
-//     Database (logical namespace) →
-//       Collection (vector index)
+//
+//	Tenant (billing/quota boundary) →
+//	  Database (logical namespace) →
+//	    Collection (vector index)
 //
 // This module provides CRUD operations for tenants and databases,
 // stored in the same SQLite SysDB alongside collections.
@@ -23,8 +24,8 @@ import (
 type Tenant struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	MaxDBs    int    `json:"max_databases"`     // 0 = unlimited
-	MaxColls  int    `json:"max_collections"`   // 0 = unlimited per DB
+	MaxDBs    int    `json:"max_databases"`   // 0 = unlimited
+	MaxColls  int    `json:"max_collections"` // 0 = unlimited per DB
 	CreatedAt int64  `json:"created_at"`
 }
 
@@ -67,29 +68,37 @@ func (s *SysDB) InitMultiTenancySchema() error {
 
 // ── Tenant CRUD ─────────────────────────────────────────────────────────────
 
-// CreateTenant creates a new tenant.
+// CreateTenant creates a new tenant atomically.
+// All three inserts (tenants, tenant_quotas, tenant_usage) are wrapped in a
+// single transaction so a crash mid-way cannot leave orphaned rows.
 func (s *SysDB) CreateTenant(name string, maxDBs, maxColls int) (*Tenant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("metadata: starting transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op after commit
+
 	id := uuid.New().String()
 	now := time.Now().Unix()
 
-	_, err := s.db.Exec(
+	if _, err := tx.Exec(
 		"INSERT INTO tenants (id, name, max_dbs, max_colls, created_at) VALUES (?, ?, ?, ?, ?)",
 		id, name, maxDBs, maxColls, now,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("metadata: creating tenant %q: %w", name, err)
 	}
-
-	_, err = s.db.Exec("INSERT INTO tenant_quotas (tenant_id) VALUES (?)", id)
-	if err != nil {
+	if _, err := tx.Exec("INSERT INTO tenant_quotas (tenant_id) VALUES (?)", id); err != nil {
 		return nil, fmt.Errorf("metadata: creating quotas for tenant %q: %w", name, err)
 	}
-	_, err = s.db.Exec("INSERT INTO tenant_usage (tenant_id) VALUES (?)", id)
-	if err != nil {
+	if _, err := tx.Exec("INSERT INTO tenant_usage (tenant_id) VALUES (?)", id); err != nil {
 		return nil, fmt.Errorf("metadata: creating usage for tenant %q: %w", name, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("metadata: committing tenant creation: %w", err)
 	}
 
 	return &Tenant{
@@ -333,8 +342,6 @@ func (s *SysDB) IncrementTenantVectorCount(tenantID string, delta int) error {
 	return err
 }
 
-
-
 // ── API Keys ────────────────────────────────────────────────────────────────
 
 // ResolveAPIKey looks up an API key by hash and returns its tenant ID and role.
@@ -347,7 +354,7 @@ func (s *SysDB) ResolveAPIKey(keyHash string) (string, string, error) {
 		"SELECT tenant_id, role FROM api_keys WHERE key_hash = ? AND (expires_at IS NULL OR expires_at > ?)",
 		keyHash, time.Now().Unix(),
 	).Scan(&tenantID, &role)
-	
+
 	if err == sql.ErrNoRows {
 		return "", "", fmt.Errorf("unknown or expired API key")
 	}
