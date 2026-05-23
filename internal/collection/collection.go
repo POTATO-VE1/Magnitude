@@ -1085,7 +1085,7 @@ func createIndex(dim int, metric, indexType string) (index.Index, error) {
 		// M=8 for default 64x compression on 512D vectors
 		return ivf.NewIVFIndex(dim, 256, 5, metric, 8, 0.10)
 	case "hnsw":
-		return hnsw.NewHNSWIndex(dim, 16, 200, 50, metric)
+		return hnsw.NewHNSWIndex(dim, 16, 400, 128, metric)
 	case "spann":
 		return spann.NewSPANNIndex(dim, 256, 5, metric)
 	default:

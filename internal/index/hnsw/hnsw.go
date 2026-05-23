@@ -104,10 +104,10 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		m = 16
 	}
 	if efConstruction <= 0 {
-		efConstruction = 200
+		efConstruction = 400
 	}
 	if efSearch <= 0 {
-		efSearch = 50
+		efSearch = 128
 	}
 
 	return &HNSWIndex{

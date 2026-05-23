@@ -12,12 +12,12 @@ func TestHNSW_RecallAt10(t *testing.T) {
 	const (
 		dim            = 128
 		m              = 16
-		efConstruction = 200
-		efSearch       = 50
+		efConstruction = 400
+		efSearch       = 128
 		numVectors     = 1000
 		numQueries     = 100
 		k              = 10
-		minRecall      = 0.90
+		minRecall      = 0.98
 		metric         = "l2"
 	)
 
