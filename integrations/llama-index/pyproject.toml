@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llama-index-vector-stores-magnitude"
+version = "0.1.0"
+description = "LlamaIndex vector store integration for Magnitude"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "llama-index-core>=0.10.0",
+    "magnitude-client>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["llama_index_vector_stores_magnitude"]
