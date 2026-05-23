@@ -10,6 +10,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -28,6 +29,26 @@ import (
 type Envelope struct {
 	Data  any    `json:"data,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// writeError writes a generic error to the client and logs the detailed error server-side.
+func writeError(w http.ResponseWriter, status int, clientMsg string, logMsg string) {
+	if logMsg != "" {
+		slog.Error("api error", "status", status, "detail", logMsg)
+	}
+	writeJSON(w, status, Envelope{Error: clientMsg})
+}
+
+// sanitizeError returns a generic error message safe for API responses.
+// Detailed errors are logged server-side only.
+func sanitizeError(err error, context string) string {
+	slog.Error(context, "error", err)
+	switch {
+	case err == nil:
+		return ""
+	default:
+		return context
+	}
 }
 
 // Handler holds dependencies for HTTP handlers.
@@ -164,7 +185,7 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 		col, err = h.manager.CreateCollection(req.Name, req.Dimension, req.Metric, req.IndexType)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusConflict, Envelope{Error: err.Error()})
+		writeError(w, http.StatusConflict, "collection creation failed", err.Error())
 		return
 	}
 
@@ -223,7 +244,7 @@ func (h *Handler) DeleteCollection(w http.ResponseWriter, r *http.Request) {
 		err = h.manager.DeleteCollection(id)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "collection not found", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: map[string]string{"deleted": id}})
@@ -315,7 +336,7 @@ func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.manager.SearchVectors(r.Context(), id, req.Query, req.K, req.Nprobe, req.Filter)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+		writeError(w, http.StatusBadRequest, "search failed", err.Error())
 		return
 	}
 
