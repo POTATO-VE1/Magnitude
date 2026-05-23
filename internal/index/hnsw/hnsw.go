@@ -220,7 +220,7 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 
 	for lc := topLayer; lc >= 0; lc-- {
 		vt.currentGen++
-		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, vt)
+		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, vt, nil)
 		// Select neighbors using the diversity heuristic
 		maxConn := h.m
 		if lc == 0 {
@@ -298,7 +298,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 	}()
 
 	// Phase 2: Beam search at layer 0
-	candidates := h.searchLayer(ctx, query, ep, ef, 0, vt)
+	candidates := h.searchLayer(ctx, query, ep, ef, 0, vt, nil)
 
 	// Extract top-k, filtering deleted nodes
 	var results []index.SearchResult
@@ -321,6 +321,115 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 	}
 
 	return results, nil
+}
+
+// SearchFiltered performs pre-filtered HNSW search. Only nodes whose IDs
+// are in validIDs are explored during graph traversal. This is much faster
+// than post-filtering when the filter is selective (e.g., 1% match rate).
+func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, nprobe int, validIDs map[uint64]bool) ([]index.SearchResult, error) {
+	if len(query) != h.dim {
+		return nil, vdberrors.Newf(vdberrors.ErrDimensionMismatch,
+			"query dimension %d != index dimension %d", len(query), h.dim)
+	}
+	if k <= 0 || len(validIDs) == 0 {
+		return nil, nil
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if h.entryPoint == -1 {
+		return nil, nil
+	}
+
+	ef := h.efSearch
+	if nprobe > 0 {
+		ef = nprobe
+	}
+	if ef < k {
+		ef = k
+	}
+
+	// Phase 1: Greedy descent — find closest valid entry point
+	ep := h.entryPoint
+	for lc := h.maxLevel; lc >= 1; lc-- {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		ep = h.greedyClosestFiltered(query, ep, lc, validIDs)
+	}
+
+	vt := visitedPool.Get().(*visitedTracker)
+	defer func() {
+		vt.currentGen++
+		visitedPool.Put(vt)
+	}()
+
+	// Phase 2: Beam search at layer 0 with filter
+	candidates := h.searchLayer(ctx, query, ep, ef, 0, vt, validIDs)
+
+	// Extract top-k (already filtered, no deleted check needed)
+	var results []index.SearchResult
+	for _, c := range candidates {
+		results = append(results, index.SearchResult{
+			ID:       h.nodes[c.nodeIdx].id,
+			Distance: c.dist,
+		})
+		if len(results) >= k {
+			break
+		}
+	}
+
+	for i := range results {
+		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
+	}
+
+	return results, nil
+}
+
+// greedyClosestFiltered walks greedily from ep, only moving to neighbors
+// whose IDs are in the valid set. At higher layers (navigation), the filter
+// is relaxed — we just need to get close to the right region.
+func (h *HNSWIndex) greedyClosestFiltered(query []float32, ep int, layer int, validIDs map[uint64]bool) int {
+	epDist := h.distFn(query, h.nodeVector(ep))
+	changed := true
+	for changed {
+		changed = false
+		if layer < len(h.nodes[ep].friends) {
+			for _, friendIdx := range h.nodes[ep].friends[layer] {
+				if h.deleted[friendIdx] {
+					continue
+				}
+				d := h.distFn(query, h.nodeVector(friendIdx))
+				if d < epDist {
+					ep = friendIdx
+					epDist = d
+					changed = true
+				}
+			}
+		}
+	}
+	// At layer 0, verify the entry point is valid. If not, find closest valid neighbor.
+	if layer == 0 && !validIDs[h.nodes[ep].id] {
+		bestDist := float32(math.MaxFloat32)
+		bestIdx := ep
+		if layer < len(h.nodes[ep].friends) {
+			for _, friendIdx := range h.nodes[ep].friends[layer] {
+				if h.deleted[friendIdx] || !validIDs[h.nodes[friendIdx].id] {
+					continue
+				}
+				d := h.distFn(query, h.nodeVector(friendIdx))
+				if d < bestDist {
+					bestDist = d
+					bestIdx = friendIdx
+				}
+			}
+		}
+		ep = bestIdx
+	}
+	return ep
 }
 
 // Delete soft-deletes a vector by ID. The node remains in the graph
@@ -451,7 +560,8 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 
 // searchLayer performs beam search at a single layer starting from ep.
 // Returns candidates sorted by distance ascending (closest first).
-func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, vt *visitedTracker) []candidate {
+// validIDs is optional — when non-nil, only nodes whose external ID is in the set are explored.
+func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, vt *visitedTracker, validIDs map[uint64]bool) []candidate {
 	// Ensure tracker is large enough
 	if ep >= len(vt.generations) {
 		newGen := make([]uint32, ep+1024)
@@ -497,6 +607,10 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 				}
 				if vt.generations[friendIdx] != vt.currentGen {
 					vt.generations[friendIdx] = vt.currentGen
+					// Pre-filter: skip nodes not in valid set
+					if validIDs != nil && !validIDs[h.nodes[friendIdx].id] {
+						continue
+					}
 					unvisited = append(unvisited, friendIdx)
 				}
 			}
