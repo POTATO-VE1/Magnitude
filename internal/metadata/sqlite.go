@@ -633,6 +633,117 @@ func (s *SysDB) LoadVectorMetadataBatch(collectionID string, vectorIDs []uint64)
 	return result, nil
 }
 
+// GetFilteredVectorIDs returns the set of vector IDs in a collection that match the given filter.
+// Used for pre-filtered HNSW search — query metadata first, then only explore matching nodes.
+func (s *SysDB) GetFilteredVectorIDs(collectionID string, filter *Filter) (map[uint64]bool, error) {
+	if filter == nil {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Build SQL WHERE clause from filter
+	where, args := filterToSQL(filter)
+	if where == "" {
+		return nil, nil
+	}
+
+	query := fmt.Sprintf(
+		"SELECT DISTINCT vector_id FROM vector_metadata WHERE collection_id = ? AND %s",
+		where,
+	)
+	allArgs := make([]interface{}, 0, len(args)+1)
+	allArgs = append(allArgs, collectionID)
+	allArgs = append(allArgs, args...)
+
+	rows, err := s.db.Query(query, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("metadata: filtering vector IDs: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[uint64]bool)
+	for rows.Next() {
+		var vid uint64
+		if err := rows.Scan(&vid); err != nil {
+			return nil, fmt.Errorf("metadata: scanning filtered vector ID: %w", err)
+		}
+		result[vid] = true
+	}
+	return result, rows.Err()
+}
+
+// filterToSQL converts a Filter struct to a SQL WHERE clause and args.
+func filterToSQL(f *Filter) (string, []interface{}) {
+	if f == nil {
+		return "", nil
+	}
+
+	var conditions []string
+	var args []interface{}
+
+	for _, ff := range f.AND {
+		cond, a := fieldFilterToSQL(ff)
+		if cond != "" {
+			conditions = append(conditions, cond)
+			args = append(args, a...)
+		}
+	}
+
+	if len(conditions) == 0 {
+		return "", nil
+	}
+	return "(" + joinStrings(conditions, " AND ") + ")", args
+}
+
+// fieldFilterToSQL converts a single FieldFilter to SQL.
+func fieldFilterToSQL(ff FieldFilter) (string, []interface{}) {
+	switch ff.Operator {
+	case "$eq":
+		return "(meta_key = ? AND meta_value = ?)", []interface{}{ff.Field, fmt.Sprintf("%v", ff.Value)}
+	case "$ne":
+		return "(meta_key = ? AND meta_value != ?)", []interface{}{ff.Field, fmt.Sprintf("%v", ff.Value)}
+	case "$gt":
+		return "(meta_key = ? AND CAST(meta_value AS REAL) > ?)", []interface{}{ff.Field, ff.Value}
+	case "$gte":
+		return "(meta_key = ? AND CAST(meta_value AS REAL) >= ?)", []interface{}{ff.Field, ff.Value}
+	case "$lt":
+		return "(meta_key = ? AND CAST(meta_value AS REAL) < ?)", []interface{}{ff.Field, ff.Value}
+	case "$lte":
+		return "(meta_key = ? AND CAST(meta_value AS REAL) <= ?)", []interface{}{ff.Field, ff.Value}
+	case "$in":
+		if len(ff.Values) == 0 {
+			return "", nil
+		}
+		q := "(meta_key = ? AND meta_value IN ("
+		a := []interface{}{ff.Field}
+		for i, v := range ff.Values {
+			if i > 0 {
+				q += ","
+			}
+			q += "?"
+			a = append(a, fmt.Sprintf("%v", v))
+		}
+		q += "))"
+		return q, a
+	default:
+		return "", nil
+	}
+}
+
+// joinStrings joins strings with a separator.
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for _, s := range strs[1:] {
+		result += sep + s
+	}
+	return result
+}
+
 // LoadAllVectorMetadata loads all metadata for all vectors in a collection.
 // Called during startup to repopulate the in-memory vectorMeta map.
 func (s *SysDB) LoadAllVectorMetadata(collectionID string) (map[uint64]map[string]any, error) {
