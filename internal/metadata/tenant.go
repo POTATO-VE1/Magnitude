@@ -63,7 +63,10 @@ func (s *SysDB) InitMultiTenancySchema() error {
 		-- so we use a pragmatic approach: try adding, ignore error if already exists.
 	`
 	_, err := s.db.Exec(schema)
-	return err
+	if err != nil {
+		return fmt.Errorf("metadata: initializing multi-tenancy schema: %w", err)
+	}
+	return nil
 }
 
 // ── Tenant CRUD ─────────────────────────────────────────────────────────────
@@ -177,7 +180,10 @@ func (s *SysDB) DeleteTenant(id string) error {
 	if err != nil {
 		return fmt.Errorf("metadata: deleting tenant %q: %w", id, err)
 	}
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metadata: checking rows affected for tenant %q: %w", id, err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("metadata: tenant %q not found", id)
 	}
@@ -210,10 +216,14 @@ func (s *SysDB) CreateDatabase(tenantID, name string) (*Database, error) {
 
 	// Check quota within the same transaction
 	var maxDBs int
-	tx.QueryRow("SELECT max_dbs FROM tenants WHERE id = ?", tenantID).Scan(&maxDBs)
+	if err := tx.QueryRow("SELECT max_dbs FROM tenants WHERE id = ?", tenantID).Scan(&maxDBs); err != nil {
+		return nil, fmt.Errorf("metadata: reading tenant max_dbs: %w", err)
+	}
 	if maxDBs > 0 {
 		var count int
-		tx.QueryRow("SELECT COUNT(*) FROM databases WHERE tenant_id = ?", tenantID).Scan(&count)
+		if err := tx.QueryRow("SELECT COUNT(*) FROM databases WHERE tenant_id = ?", tenantID).Scan(&count); err != nil {
+			return nil, fmt.Errorf("metadata: counting databases: %w", err)
+		}
 		if count >= maxDBs {
 			return nil, fmt.Errorf("metadata: tenant %q has reached max databases limit (%d)", tenantID, maxDBs)
 		}
@@ -350,7 +360,10 @@ func (s *SysDB) IncrementTenantVectorCount(tenantID string, delta int) error {
 		"UPDATE tenant_usage SET vector_count = vector_count + ?, updated_at = ? WHERE tenant_id = ?",
 		delta, time.Now().Unix(), tenantID,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("metadata: incrementing vector count for tenant %q: %w", tenantID, err)
+	}
+	return nil
 }
 
 // ── API Keys ────────────────────────────────────────────────────────────────
