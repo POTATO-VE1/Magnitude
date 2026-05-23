@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package magnitude;
+
+option go_package = "github.com/POTATO-VE1/Magnitude/internal/grpc/proto";
+
+// ── Health ──────────────────────────────────────────────────────────────────
+
+message HealthRequest {}
+message HealthResponse {
+  string status = 1;
+}
+
+// ── Collections ─────────────────────────────────────────────────────────────
+
+message CreateCollectionRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+  string name = 3;
+  int32 dimension = 4;
+  string metric = 5;       // l2, cosine, dot, manhattan
+  string index_type = 6;   // flat, ivf, hnsw, spann
+}
+
+message CollectionResponse {
+  string id = 1;
+  string tenant_id = 2;
+  string database_id = 3;
+  string name = 4;
+  int32 dimension = 5;
+  string metric = 6;
+  string index_type = 7;
+  int64 created_at = 8;
+  int32 vector_count = 9;
+}
+
+message ListCollectionsRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+}
+
+message ListCollectionsResponse {
+  repeated CollectionResponse collections = 1;
+}
+
+message DeleteCollectionRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+  string collection_id = 3;
+}
+
+message DeleteResponse {
+  string deleted = 1;
+}
+
+// ── Vectors ─────────────────────────────────────────────────────────────────
+
+message InsertRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+  string collection_id = 3;
+  repeated uint64 ids = 4;
+  repeated FloatVector vectors = 5;
+  repeated bytes metadata = 6; // JSON-encoded metadata per vector
+}
+
+message FloatVector {
+  repeated float values = 1;
+}
+
+message InsertResponse {
+  int32 inserted = 1;
+}
+
+message SearchRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+  string collection_id = 3;
+  repeated float query = 4;
+  int32 k = 5;
+  int32 nprobe = 6;
+  bytes filter = 7; // JSON-encoded filter
+}
+
+message SearchResult {
+  uint64 id = 1;
+  float distance = 2;
+  float score = 3;
+  bytes metadata = 4; // JSON-encoded
+}
+
+message SearchResponse {
+  repeated SearchResult results = 1;
+}
+
+message DeleteVectorRequest {
+  string tenant_id = 1;
+  string database_id = 2;
+  string collection_id = 3;
+  repeated uint64 ids = 4;
+}
+
+// ── Service ─────────────────────────────────────────────────────────────────
+
+service MagnitudeService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Collections
+  rpc CreateCollection(CreateCollectionRequest) returns (CollectionResponse);
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+  rpc DeleteCollection(DeleteCollectionRequest) returns (DeleteResponse);
+
+  // Vectors
+  rpc Insert(InsertRequest) returns (InsertResponse);
+  rpc Search(SearchRequest) returns (SearchResponse);
+  rpc DeleteVectors(DeleteVectorRequest) returns (DeleteResponse);
+}

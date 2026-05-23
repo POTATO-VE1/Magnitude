@@ -36,6 +36,7 @@ import (
 	"github.com/POTATO-VE1/Magnitude/internal/events"
 	"github.com/POTATO-VE1/Magnitude/internal/failure"
 	"github.com/POTATO-VE1/Magnitude/internal/gossip"
+	magnitudegrpc "github.com/POTATO-VE1/Magnitude/internal/grpc"
 	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 	"github.com/POTATO-VE1/Magnitude/internal/migration"
 	"github.com/POTATO-VE1/Magnitude/internal/routing"
@@ -377,6 +378,15 @@ func main() {
 		}
 	}()
 
+	// ── 10b. Start gRPC server ──────────────────────────────────────────────
+	grpcAddr := ":9090"
+	grpcServer := magnitudegrpc.NewServer(grpcAddr, mgr)
+	go func() {
+		if err := grpcServer.Start(); err != nil {
+			slog.Error("gRPC server error", "error", err)
+		}
+	}()
+
 	// ── 11. Signal handling ──────────────────────────────────────────────────
 	// SIGINT/SIGTERM → graceful shutdown
 	// SIGHUP → config hot reload (rate limits, GC percent — NOT address changes)
@@ -446,6 +456,10 @@ func main() {
 	if err := internalServer.Shutdown(shutdownCtx); err != nil {
 		slog.Error("internal server shutdown error", "error", err)
 	}
+
+	// Step 3b: Stop gRPC server
+	slog.Info("shutdown step 2b/6: stopping gRPC server...")
+	grpcServer.Stop()
 
 	// Step 4: Flush all collection indexes
 	slog.Info("shutdown step 3/6: flushing collection indexes...")
