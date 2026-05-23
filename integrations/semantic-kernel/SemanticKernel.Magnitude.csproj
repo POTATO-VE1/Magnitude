@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>SemanticKernel.Magnitude</RootNamespace>
+    <PackageId>SemanticKernel.Magnitude</PackageId>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.0.0" />
+    <ProjectReference Include="../../sdks/dotnet/Magnitude.Client.csproj" />
+  </ItemGroup>
+</Project>

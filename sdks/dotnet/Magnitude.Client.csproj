@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Magnitude.Client</RootNamespace>
+    <PackageId>Magnitude.Client</PackageId>
+    <Version>0.1.0</Version>
+    <Description>.NET client for the Magnitude vector database</Description>
+    <License>MIT</License>
+  </PropertyGroup>
+</Project>
