@@ -14,6 +14,22 @@ import (
 
 const defaultInitialCapacity = 1024
 
+// searchBufPool recycles []float32 distance buffers to avoid per-query allocations.
+var searchBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]float32, 0, 4096)
+		return &buf
+	},
+}
+
+// idBufPool recycles []uint64 ID buffers to avoid per-query allocations.
+var idBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]uint64, 0, 4096)
+		return &buf
+	},
+}
+
 // FlatIndex is a brute-force exact nearest-neighbor index.
 // It stores all vectors in a single contiguous []float32 slice (row-major)
 // for cache-friendly sequential scans and potential BLAS acceleration.
@@ -134,8 +150,21 @@ func (idx *FlatIndex) Search(ctx context.Context, query []float32, k int, nprobe
 	}
 
 	// Compute distances from query to all stored vectors using batch SIMD
-	distances := make([]float32, n)
-	liveIDs := make([]uint64, n)
+	distPtr := searchBufPool.Get().(*[]float32)
+	distances := *distPtr
+	if cap(distances) < n {
+		distances = make([]float32, n)
+	} else {
+		distances = distances[:n]
+	}
+
+	idPtr := idBufPool.Get().(*[]uint64)
+	liveIDs := *idPtr
+	if cap(liveIDs) < n {
+		liveIDs = make([]uint64, n)
+	} else {
+		liveIDs = liveIDs[:n]
+	}
 	copy(liveIDs, idx.ids[:n])
 
 	// Process in chunks for context cancellation
@@ -147,6 +176,10 @@ func (idx *FlatIndex) Search(ctx context.Context, query []float32, k int, nprobe
 		}
 		if err := ctx.Err(); err != nil {
 			idx.mu.RUnlock()
+			*distPtr = distances
+			searchBufPool.Put(distPtr)
+			*idPtr = liveIDs
+			idBufPool.Put(idPtr)
 			return nil, err
 		}
 		distance.BatchDistance(query, idx.vectors[start*idx.dim:], end-start, idx.dim, idx.metric, distances[start:])
@@ -155,6 +188,12 @@ func (idx *FlatIndex) Search(ctx context.Context, query []float32, k int, nprobe
 
 	// Top-K selection via max-heap (heap.go)
 	results := TopK(distances, liveIDs, k, idx.metric)
+
+	// Return buffers to pool
+	*distPtr = distances
+	searchBufPool.Put(distPtr)
+	*idPtr = liveIDs
+	idBufPool.Put(idPtr)
 
 	// Populate Score field
 	for i := range results {
