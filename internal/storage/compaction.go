@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -75,17 +76,24 @@ func (c *Compactor) Start(compactFn func() error) {
 		c.mu.Unlock()
 		return
 	}
-	c.running = true
-	c.mu.Unlock()
 
+	// All state updates under a single lock to prevent Start/Stop race
 	ctx, cancel := context.WithCancel(context.Background())
-	c.mu.Lock()
 	c.cancel = cancel
 	c.done = make(chan struct{})
+	c.running = true
 	c.mu.Unlock()
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				buf := make([]byte, 4096)
+				n := runtime.Stack(buf, false)
+				slog.Error("compaction goroutine panicked",
+					"recover", r,
+					"stack", string(buf[:n]),
+				)
+			}
 			c.mu.Lock()
 			c.running = false
 			c.mu.Unlock()
@@ -135,6 +143,9 @@ func (c *Compactor) Stop() {
 func CompactVectors(targetPath string, vectors []float32, dim int) error {
 	if dim <= 0 {
 		return fmt.Errorf("compaction: invalid dimension %d", dim)
+	}
+	if len(vectors)%dim != 0 {
+		return fmt.Errorf("compaction: vectors length %d not divisible by dim %d", len(vectors), dim)
 	}
 	vectorCount := len(vectors) / dim
 	if vectorCount == 0 {
@@ -196,8 +207,11 @@ func CompactVectors(targetPath string, vectors []float32, dim int) error {
 
 	// Fsync directory to ensure rename is durably recorded
 	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
-		_ = dirFile.Close()
+		if err := dirFile.Sync(); err != nil {
+			dirFile.Close()
+			return fmt.Errorf("compaction: fsync directory: %w", err)
+		}
+		dirFile.Close()
 	} else {
 		slog.Warn("compaction: failed to open directory for fsync", "dir", dir, "error", err)
 	}
