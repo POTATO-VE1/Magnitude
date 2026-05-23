@@ -63,11 +63,17 @@ func Recovery(next http.Handler) http.Handler {
 }
 
 // RequestID middleware generates or propagates an X-Request-ID header.
+// Validates client-supplied IDs to prevent log injection.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
 		if reqID == "" {
 			reqID = uuid.New().String()
+		} else {
+			// Validate UUID format to prevent log injection
+			if _, err := uuid.Parse(reqID); err != nil {
+				reqID = uuid.New().String()
+			}
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		r.Header.Set("X-Request-ID", reqID)
