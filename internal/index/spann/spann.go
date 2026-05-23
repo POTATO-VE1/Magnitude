@@ -31,6 +31,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -207,27 +208,12 @@ func (s *SPANNIndex) Search(ctx context.Context, query []float32, k int, nprobe 
 		candidates = append(candidates, candidate{id: p.id, dist: d})
 	}
 
-	// Select top-K (partial sort)
+	// Select top-K using O(n log n) sort instead of O(n²) selection sort
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
+	})
 	if len(candidates) > k {
-		for i := 0; i < k; i++ {
-			minIdx := i
-			for j := i + 1; j < len(candidates); j++ {
-				if candidates[j].dist < candidates[minIdx].dist {
-					minIdx = j
-				}
-			}
-			candidates[i], candidates[minIdx] = candidates[minIdx], candidates[i]
-		}
 		candidates = candidates[:k]
-	} else {
-		// Sort what we have
-		for i := 0; i < len(candidates); i++ {
-			for j := i + 1; j < len(candidates); j++ {
-				if candidates[j].dist < candidates[i].dist {
-					candidates[i], candidates[j] = candidates[j], candidates[i]
-				}
-			}
-		}
 	}
 
 	results := make([]index.SearchResult, len(candidates))
@@ -420,13 +406,9 @@ func (s *SPANNIndex) bruteForceSearch(query []float32, k int) ([]index.SearchRes
 	}
 
 	// Sort by distance
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].dist < candidates[i].dist {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].dist < candidates[j].dist
+	})
 
 	if len(candidates) > k {
 		candidates = candidates[:k]
