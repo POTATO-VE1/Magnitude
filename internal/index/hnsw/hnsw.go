@@ -131,8 +131,6 @@ func (h *HNSWIndex) randomLevel() int {
 	return level
 }
 
-
-
 // Insert adds a vector with the given ID into the HNSW graph.
 func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 	if len(vector) != h.dim {
@@ -450,27 +448,44 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 		}
 
 		if layer < len(h.nodes[c.nodeIdx].friends) {
-			for i, friendIdx := range h.nodes[c.nodeIdx].friends[layer] {
-				if i%100 == 0 {
-					select {
-					case <-ctx.Done():
-						return nil
-					default:
+			friends := h.nodes[c.nodeIdx].friends[layer]
+
+			// Collect unvisited friends for batch distance computation
+			unvisited := make([]int, 0, len(friends))
+			for _, friendIdx := range friends {
+				if !visited[friendIdx] {
+					visited[friendIdx] = true
+					unvisited = append(unvisited, friendIdx)
+				}
+			}
+
+			// Batch compute distances for all unvisited neighbors
+			if len(unvisited) > 0 {
+				// Build contiguous vector buffer
+				batchVecs := make([]float32, len(unvisited)*h.dim)
+				for i, fi := range unvisited {
+					copy(batchVecs[i*h.dim:], h.nodes[fi].vector)
+				}
+				dists := make([]float32, len(unvisited))
+				distance.BatchDistance(query, batchVecs, len(unvisited), h.dim, h.metric, dists)
+
+				// Process results
+				for i, fi := range unvisited {
+					if i%100 == 0 {
+						select {
+						case <-ctx.Done():
+							return nil
+						default:
+						}
 					}
-				}
-				if visited[friendIdx] {
-					continue
-				}
-				visited[friendIdx] = true
-
-				d := h.distFn(query, h.nodes[friendIdx].vector)
-				friend := candidate{nodeIdx: friendIdx, dist: d}
-
-				if results.Len() < ef || d < (*results)[0].dist {
-					heap.Push(cands, friend)
-					heap.Push(results, friend)
-					if results.Len() > ef {
-						heap.Pop(results)
+					d := dists[i]
+					friend := candidate{nodeIdx: fi, dist: d}
+					if results.Len() < ef || d < (*results)[0].dist {
+						heap.Push(cands, friend)
+						heap.Push(results, friend)
+						if results.Len() > ef {
+							heap.Pop(results)
+						}
 					}
 				}
 			}
