@@ -1,6 +1,10 @@
 package distance
 
-import "golang.org/x/sys/cpu"
+import (
+	"runtime"
+
+	"golang.org/x/sys/cpu"
+)
 
 var useSIMD bool
 
@@ -9,11 +13,18 @@ var useSIMD bool
 const simdThreshold = 64
 
 func init() {
-	useSIMD = cpu.X86.HasAVX2 && cpu.X86.HasFMA
+	switch runtime.GOARCH {
+	case "amd64":
+		useSIMD = cpu.X86.HasAVX2 && cpu.X86.HasFMA
+	case "arm64":
+		useSIMD = cpu.ARM64.HasASIMD
+	default:
+		useSIMD = false
+	}
 }
 
 // L2Batch computes L2 squared distance between query and n vectors.
-// Uses AVX2 SIMD on supporting CPUs for large batches, optimized pure Go otherwise.
+// Uses SIMD on supporting CPUs for large batches, optimized pure Go otherwise.
 func L2Batch(query, matrix []float32, n, dim int, results []float32) {
 	if useSIMD && n >= simdThreshold {
 		l2BatchSIMD(query, matrix, n, dim, results)
