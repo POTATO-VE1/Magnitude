@@ -27,9 +27,9 @@ type FlatIndex struct {
 	distFn   distance.DistanceFunc
 	capacity int
 	count    int
-	vectors  []float32        // shape [capacity * dim], row-major
-	ids      []uint64         // shape [capacity], id at row i
-	idToRow  map[uint64]int   // id → row index, O(1) lookup
+	vectors  []float32      // shape [capacity * dim], row-major
+	ids      []uint64       // shape [capacity], id at row i
+	idToRow  map[uint64]int // id → row index, O(1) lookup
 }
 
 // NewFlatIndex creates a new flat index for vectors of the given dimension.
@@ -133,21 +133,23 @@ func (idx *FlatIndex) Search(ctx context.Context, query []float32, k int, nprobe
 		return nil, nil
 	}
 
-	// Compute distances from query to all stored vectors
+	// Compute distances from query to all stored vectors using batch SIMD
 	distances := make([]float32, n)
 	liveIDs := make([]uint64, n)
 	copy(liveIDs, idx.ids[:n])
 
-	for i := 0; i < n; i++ {
-		// Check context cancellation every 10K vectors to avoid unbounded loops
-		if i%10000 == 0 {
-			if err := ctx.Err(); err != nil {
-				idx.mu.RUnlock()
-				return nil, err
-			}
+	// Process in chunks for context cancellation
+	const chunkSize = 10000
+	for start := 0; start < n; start += chunkSize {
+		end := start + chunkSize
+		if end > n {
+			end = n
 		}
-		row := idx.vectors[i*idx.dim : (i+1)*idx.dim]
-		distances[i] = idx.distFn(query, row)
+		if err := ctx.Err(); err != nil {
+			idx.mu.RUnlock()
+			return nil, err
+		}
+		distance.BatchDistance(query, idx.vectors[start*idx.dim:], end-start, idx.dim, idx.metric, distances[start:])
 	}
 	idx.mu.RUnlock()
 
