@@ -4,16 +4,17 @@
 // predicates. This is ChromaDB's "where" clause equivalent.
 //
 // Supported operators:
-//   $eq  — equality
-//   $ne  — not equal
-//   $gt  — greater than
-//   $gte — greater than or equal
-//   $lt  — less than
-//   $lte — less than or equal
-//   $in  — value in set
-//   $nin — value not in set
-//   $and — logical AND of sub-filters
-//   $or  — logical OR of sub-filters
+//
+//	$eq  — equality
+//	$ne  — not equal
+//	$gt  — greater than
+//	$gte — greater than or equal
+//	$lt  — less than
+//	$lte — less than or equal
+//	$in  — value in set
+//	$nin — value not in set
+//	$and — logical AND of sub-filters
+//	$or  — logical OR of sub-filters
 //
 // Example filter (JSON):
 //
@@ -73,6 +74,7 @@ func ParseFilter(raw map[string]any) (*Filter, error) {
 					return nil, err
 				}
 				f.AND = append(f.AND, subFilter.AND...)
+				f.OR = append(f.OR, subFilter.OR...)
 			}
 
 		case "$or":
