@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"github.com/POTATO-VE1/Magnitude/internal/cluster"
@@ -39,6 +40,9 @@ func (r *Router) WriteWithConsistency(
 		required = 1
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	acks := 0
@@ -49,9 +53,16 @@ func (r *Router) WriteWithConsistency(
 		go func(nid string) {
 			defer wg.Done()
 
+			// Check if quorum already reached or context cancelled
+			mu.Lock()
+			done := acks >= required || ctx.Err() != nil
+			mu.Unlock()
+			if done {
+				return
+			}
+
 			var err error
 			if r.IsLocal(nid) {
-				// Local insert — handled by the caller
 				err = nil
 			} else {
 				addr := r.GetAddress(nid)
@@ -74,6 +85,9 @@ func (r *Router) WriteWithConsistency(
 				}
 			} else {
 				acks++
+				if acks >= required {
+					cancel() // quorum reached, cancel remaining
+				}
 			}
 			mu.Unlock()
 		}(nodeID)
@@ -118,6 +132,9 @@ func (r *Router) ReadWithConsistency(
 		required = 1
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var allResults []index.SearchResult
@@ -129,12 +146,17 @@ func (r *Router) ReadWithConsistency(
 		go func(nid string) {
 			defer wg.Done()
 
+			mu.Lock()
+			done := responses >= required || ctx.Err() != nil
+			mu.Unlock()
+			if done {
+				return
+			}
+
 			var results []index.SearchResult
 			var err error
 
 			if r.IsLocal(nid) {
-				// Local search — handled by the caller via manager
-				// Return empty here; caller will add local results
 				results = nil
 			} else {
 				addr := r.GetAddress(nid)
@@ -159,6 +181,9 @@ func (r *Router) ReadWithConsistency(
 			} else {
 				allResults = append(allResults, results...)
 				responses++
+				if responses >= required {
+					cancel()
+				}
 			}
 			mu.Unlock()
 		}(nodeID)
@@ -172,20 +197,13 @@ func (r *Router) ReadWithConsistency(
 
 	// Sort by distance and take top-K
 	if len(allResults) > k {
-		sortByDistance(allResults)
+		sort.Slice(allResults, func(i, j int) bool {
+			return allResults[i].Distance < allResults[j].Distance
+		})
 		allResults = allResults[:k]
 	}
 
 	return allResults, nil
-}
-
-// sortByDistance sorts results by distance ascending (closest first).
-func sortByDistance(results []index.SearchResult) {
-	for i := 1; i < len(results); i++ {
-		for j := i; j > 0 && results[j].Distance < results[j-1].Distance; j-- {
-			results[j], results[j-1] = results[j-1], results[j]
-		}
-	}
 }
 
 // LogReplicaWrite logs a replica write operation for observability.
