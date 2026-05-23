@@ -1092,3 +1092,82 @@ func createIndex(dim int, metric, indexType string) (index.Index, error) {
 		return nil, fmt.Errorf("unsupported index type: %q", indexType)
 	}
 }
+
+// SnapshotExport contains all data needed to restore a collection.
+type SnapshotExport struct {
+	Collection *metadata.Collection      `json:"collection"`
+	Vectors    []index.ExportedVector    `json:"vectors"`
+	Metadata   map[uint64]map[string]any `json:"metadata"`
+}
+
+// ExportCollectionSnapshot exports a collection's full state for backup.
+func (m *Manager) ExportCollectionSnapshot(collectionID string) (*SnapshotExport, error) {
+	m.mu.RLock()
+	col, exists := m.collections[collectionID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("collection %q not found", collectionID)
+	}
+
+	col.mu.RLock()
+	defer col.mu.RUnlock()
+
+	// Export vectors from index
+	var vectors []index.ExportedVector
+	if exporter, ok := col.idx.(index.VectorExporter); ok {
+		vectors = exporter.ExportVectors()
+	}
+
+	// Export metadata for all vectors
+	ids := make([]uint64, len(vectors))
+	for i, v := range vectors {
+		ids[i] = v.ID
+	}
+	allMeta, _ := col.sysdb.LoadVectorMetadataBatch(collectionID, ids)
+
+	return &SnapshotExport{
+		Collection: col.meta,
+		Vectors:    vectors,
+		Metadata:   allMeta,
+	}, nil
+}
+
+// RestoreCollectionSnapshot restores a collection from a snapshot.
+func (m *Manager) RestoreCollectionSnapshot(snap *SnapshotExport) error {
+	// Create the collection
+	col, err := m.CreateCollection(
+		snap.Collection.Name,
+		snap.Collection.Dimension,
+		snap.Collection.Metric,
+		snap.Collection.IndexType,
+	)
+	if err != nil {
+		return fmt.Errorf("restore: creating collection: %w", err)
+	}
+
+	// Insert vectors
+	ids := make([]uint64, len(snap.Vectors))
+	vectors := make([][]float32, len(snap.Vectors))
+	metadata := make([]map[string]any, len(snap.Vectors))
+
+	for i, v := range snap.Vectors {
+		ids[i] = v.ID
+		vectors[i] = v.Vector
+		if snap.Metadata != nil {
+			metadata[i] = snap.Metadata[v.ID]
+		}
+	}
+
+	if err := m.InsertVectors(context.Background(), col.ID, ids, vectors, metadata); err != nil {
+		return fmt.Errorf("restore: inserting vectors: %w", err)
+	}
+
+	slog.Info("collection restored",
+		"id", col.ID,
+		"name", snap.Collection.Name,
+		"vectors", len(snap.Vectors),
+	)
+
+	return nil
+}

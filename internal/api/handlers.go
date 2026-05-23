@@ -99,6 +99,10 @@ func NewRouter(cfg *config.Config, mgr *collection.Manager, rt *routing.Router, 
 	r.Post("/v1/collections/{id}/search", h.SearchVectors)
 	r.Delete("/v1/collections/{id}/vectors/{vectorId}", h.DeleteVector)
 
+	// Snapshot routes
+	r.Post("/v1/collections/{id}/snapshot", h.SnapshotCollection)
+	r.Post("/v1/collections/{id}/restore", h.RestoreCollection)
+
 	// Prometheus metrics endpoint
 	r.Handle("/metrics", promhttp.Handler())
 
@@ -530,4 +534,38 @@ func validateMetadata(meta map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// SnapshotCollection exports a collection's full state for backup.
+func (h *Handler) SnapshotCollection(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	snap, err := h.manager.ExportCollectionSnapshot(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "collection not found", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, Envelope{Data: snap})
+}
+
+// RestoreCollection restores a collection from a snapshot.
+func (h *Handler) RestoreCollection(w http.ResponseWriter, r *http.Request) {
+	var snap collection.SnapshotExport
+	if err := json.NewDecoder(r.Body).Decode(&snap); err != nil {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
+		return
+	}
+
+	if snap.Collection == nil {
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "collection data is required"})
+		return
+	}
+
+	if err := h.manager.RestoreCollectionSnapshot(&snap); err != nil {
+		writeError(w, http.StatusInternalServerError, "restore failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, Envelope{Data: map[string]string{"status": "restored"}})
 }
