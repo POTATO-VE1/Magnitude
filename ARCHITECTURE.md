@@ -72,11 +72,14 @@ Pluggable index engine. All implementations satisfy the `Index` interface (`Inse
 - **recall.go**: Recall measurement utilities for benchmarking index quality.
 
 ### `internal/distance/`
-Distance metric computation:
-- **distance.go**: Pure-Go L2 and cosine distance implementations.
-- **simd.c / simd_amd64.go**: CGO-based SIMD-accelerated kernels for AMD64.
-- **simd_stub.go / batch_pure.go**: Fallback for non-AMD64 platforms.
-- **dispatch.go**: Build-tag-based dispatch selecting SIMD or pure-Go at compile time.
+Distance metric computation with batch SIMD acceleration:
+- **distance.go**: Pure-Go per-vector distance functions (L2, cosine, dot, Manhattan) and score normalization. Serves as the correctness oracle and is used for single-vector comparisons.
+- **batch.go**: `BatchDistance` dispatcher — routes batch distance computation by metric name to the appropriate implementation (L2, cosine, dot, Manhattan).
+- **batch_pure.go**: Optimized pure-Go batch implementations using 4-wide accumulator patterns. The Go compiler auto-vectorizes these to VFMADD (amd64) / FMLA (arm64). Works on all architectures with no CGO.
+- **simd_avx2.c / simd_avx2.h / simd_avx2.go**: CGO-based AVX2+FMA batch distance kernels for AMD64. Processes 8 floats per iteration using 256-bit YMM registers. Covers L2, dot, and cosine. Compiled with `-O3 -mavx2 -mfma`.
+- **simd_stub.go**: No-op stubs for non-AMD64 platforms (the SIMD path is never reached because `dispatch.go` gates on CPU features).
+- **dispatch.go**: Runtime dispatch — checks `cpu.X86.HasAVX2 && cpu.X86.HasFMA` at init to select SIMD or pure-Go for each batch call.
+- **cpuinfo.go**: `DetectCPUFeatures()` reports available SIMD capabilities (AVX2, AVX-512, NEON, FMA) and logs them at startup via `LogCPUFeatures()`.
 
 ### `internal/metadata/`
 SQLite-backed system database (SysDB):
@@ -166,7 +169,7 @@ Different workloads need different tradeoffs. Flat is perfect for small datasets
 For datasets >1K vectors, HNSW delivers O(log n) query time vs O(n) for brute-force. The tradeoff is slightly lower recall (configurable via `ef`) — acceptable for semantic image search where approximate is fine.
 
 **Why `modernc.org/sqlite` over `mattn/go-sqlite3`?**
-`modernc.org/sqlite` is a pure-Go SQLite implementation — no CGO dependency for the database layer. This simplifies cross-compilation. CGO is only required for the optional SIMD distance kernels, which have a pure-Go fallback.
+`modernc.org/sqlite` is a pure-Go SQLite implementation — no CGO dependency for the database layer. This simplifies cross-compilation. CGO is only required for the optional AVX2+FMA batch distance kernels (`internal/distance/simd_avx2.c`), which have a pure-Go fallback that works on all architectures.
 
 **Why SQLite for metadata?**
 Magnitude is designed to be self-contained. SQLite in WAL mode handles concurrent reads well and requires zero operational overhead — no separate DB process to manage.

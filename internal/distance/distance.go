@@ -3,8 +3,8 @@
 // — no BLAS calls in the hot path, as CGO overhead (~90ns/call) would dominate
 // at the per-vector level.
 //
-// SIMD acceleration is added in Phase 5 via assembly/CGO with batch processing.
-// Until then, these scalar implementations serve as the correctness oracle.
+// Batch SIMD acceleration (AVX2+FMA) is in batch.go / simd_avx2.c with runtime dispatch.
+// These scalar implementations serve as the correctness oracle and for single-vector comparisons.
 //
 // All functions assume equal-length slices. Callers MUST validate dimensions before
 // calling; these functions do NOT check lengths in the hot path.
