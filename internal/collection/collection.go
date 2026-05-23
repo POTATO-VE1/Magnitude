@@ -572,19 +572,18 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 	}
 
 	// Then index (in-memory, fast)
-	for i, id := range ids {
-		// Clear any existing tombstone if this is a re-insertion
-		if err := m.sysdb.RemoveTombstone(collectionID, id); err != nil {
-			slog.Warn("failed to clear tombstone", "vector_id", id, "error", err)
-		}
+	// Batch tombstone removal before index inserts
+	if err := m.sysdb.RemoveTombstonesBatch(collectionID, ids); err != nil {
+		slog.Warn("failed to batch clear tombstones", "error", err)
+	}
 
+	for i, id := range ids {
 		if err := col.idx.Insert(id, vectors[i]); err != nil {
 			return fmt.Errorf("collection: index insert failed for vector %d: %w", id, err)
 		}
 
 		// Store metadata if provided
 		if meta != nil && i < len(meta) && meta[i] != nil {
-			// Persist to SQLite for durability across restarts
 			if err := col.sysdb.SaveVectorMetadata(collectionID, id, meta[i]); err != nil {
 				slog.Warn("failed to persist vector metadata",
 					"vector_id", id,

@@ -447,6 +447,51 @@ func (s *SysDB) RemoveTombstone(collectionID string, vectorID uint64) error {
 	return nil
 }
 
+// RemoveTombstonesBatch clears tombstones for multiple vectors in a single operation.
+func (s *SysDB) RemoveTombstonesBatch(collectionID string, vectorIDs []uint64) error {
+	if len(vectorIDs) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	const maxBatch = 900
+	for start := 0; start < len(vectorIDs); start += maxBatch {
+		end := start + maxBatch
+		if end > len(vectorIDs) {
+			end = len(vectorIDs)
+		}
+		batch := vectorIDs[start:end]
+
+		query := "DELETE FROM tombstones WHERE collection_id = ? AND vector_id IN ("
+		args := make([]interface{}, len(batch)+1)
+		args[0] = collectionID
+		for i, id := range batch {
+			if i > 0 {
+				query += ","
+			}
+			query += "?"
+			args[i+1] = id
+		}
+		query += ")"
+
+		if _, err := s.db.Exec(query, args...); err != nil {
+			return fmt.Errorf("metadata: removing tombstones batch: %w", err)
+		}
+	}
+
+	// Update in-memory set
+	s.tombstoneMu.Lock()
+	if set, ok := s.tombstones[collectionID]; ok {
+		for _, id := range vectorIDs {
+			delete(set, id)
+		}
+	}
+	s.tombstoneMu.Unlock()
+
+	return nil
+}
+
 // IsTombstoned checks if a vector has been deleted (hot path, in-memory only).
 func (s *SysDB) IsTombstoned(collectionID string, vectorID uint64) bool {
 	s.tombstoneMu.RLock()
