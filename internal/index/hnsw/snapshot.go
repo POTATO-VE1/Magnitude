@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -50,7 +51,7 @@ func (h *HNSWIndex) SnapshotToFile(path string, seqID uint64) error {
 	// Serialize data section to buffer first (for checksum computation)
 	var dataBuf bytes.Buffer
 
-	for _, n := range h.nodes {
+	for i, n := range h.nodes {
 		// node id
 		if err := binary.Write(&dataBuf, binary.LittleEndian, n.id); err != nil {
 			return fmt.Errorf("hnsw snapshot: writing node id: %w", err)
@@ -60,7 +61,7 @@ func (h *HNSWIndex) SnapshotToFile(path string, seqID uint64) error {
 			return fmt.Errorf("hnsw snapshot: writing node level: %w", err)
 		}
 		// vector
-		for _, v := range n.vector {
+		for _, v := range h.nodeVector(i) {
 			if err := binary.Write(&dataBuf, binary.LittleEndian, math.Float32bits(v)); err != nil {
 				return fmt.Errorf("hnsw snapshot: writing vector: %w", err)
 			}
@@ -231,11 +232,40 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 
 		nodes[i] = node{
 			id:      id,
-			vector:  vec,
 			level:   int(level),
 			friends: friends,
 		}
 		idToNode[id] = i
+	}
+
+	// Build contiguous vector slab
+	vectorSlab := make([]float32, 0, int(hdr.NodeCount)*dim)
+	vectorOffsets := make([]int, int(hdr.NodeCount))
+	// Re-read vectors from data
+	r2 := bytes.NewReader(dataBytes)
+	for i := 0; i < int(hdr.NodeCount); i++ {
+		// Skip id (8) + level (4) = 12 bytes
+		if _, err := r2.Seek(12, io.SeekCurrent); err != nil {
+			return nil, 0, fmt.Errorf("hnsw snapshot: seeking node %d: %w", i, err)
+		}
+		vectorOffsets[i] = len(vectorSlab)
+		for j := 0; j < dim; j++ {
+			var bits uint32
+			if err := binary.Read(r2, binary.LittleEndian, &bits); err != nil {
+				return nil, 0, fmt.Errorf("hnsw snapshot: re-reading node %d vector[%d]: %w", i, j, err)
+			}
+			vectorSlab = append(vectorSlab, math.Float32frombits(bits))
+		}
+		// Skip friends
+		for lc := 0; lc <= int(nodes[i].level); lc++ {
+			var count uint32
+			if err := binary.Read(r2, binary.LittleEndian, &count); err != nil {
+				return nil, 0, fmt.Errorf("hnsw snapshot: re-reading node %d level %d friend count: %w", i, lc, err)
+			}
+			if _, err := r2.Seek(int64(count*4), io.SeekCurrent); err != nil {
+				return nil, 0, fmt.Errorf("hnsw snapshot: re-reading node %d level %d friends: %w", i, lc, err)
+			}
+		}
 	}
 
 	// Reconstruct HNSWIndex
@@ -251,6 +281,8 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 		entryPoint:     int(hdr.EntryPoint),
 		nodes:          nodes,
 		idToNode:       idToNode,
+		vectorSlab:     vectorSlab,
+		vectorOffsets:  vectorOffsets,
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
 	}

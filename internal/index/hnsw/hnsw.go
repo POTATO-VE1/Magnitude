@@ -37,7 +37,6 @@ import (
 // node represents a single vertex in the HNSW graph.
 type node struct {
 	id      uint64
-	vector  []float32
 	level   int     // max layer this node exists on
 	friends [][]int // friends[layer] = list of neighbor node indices
 }
@@ -57,10 +56,18 @@ type HNSWIndex struct {
 	entryPoint     int            // index of the entry point node
 	nodes          []node         // all nodes (index = internal node ID)
 	idToNode       map[uint64]int // external ID → internal node index
+	vectorSlab     []float32      // contiguous vector storage [nodeCount * dim]
+	vectorOffsets  []int          // node index → offset in vectorSlab
 	rng            *rand.Rand
 	deleted        map[int]bool // soft-delete tombstones by internal nodeIdx
 	snapshotPath   string       // file path for snapshot persistence
 	snapshotSeqID  uint64       // WAL seqID at last snapshot time
+}
+
+// nodeVector returns the vector for the given node index from the contiguous slab.
+func (h *HNSWIndex) nodeVector(nodeIdx int) []float32 {
+	offset := h.vectorOffsets[nodeIdx]
+	return h.vectorSlab[offset : offset+h.dim]
 }
 
 // visitedPool is a sync.Pool of visited tracker maps to avoid allocation overhead during searches.
@@ -107,6 +114,8 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		entryPoint:     -1,
 		nodes:          make([]node, 0, 1024),
 		idToNode:       make(map[uint64]int),
+		vectorSlab:     make([]float32, 0, 1024*dim),
+		vectorOffsets:  make([]int, 0, 1024),
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
 	}, nil
@@ -161,14 +170,17 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	// Create node with friend lists for each layer
 	n := node{
 		id:      id,
-		vector:  make([]float32, h.dim),
 		level:   level,
 		friends: make([][]int, level+1),
 	}
-	copy(n.vector, vector)
 	for i := range n.friends {
 		n.friends[i] = make([]int, 0, h.m)
 	}
+
+	// Append vector to contiguous slab
+	offset := len(h.vectorSlab)
+	h.vectorSlab = append(h.vectorSlab, vector...)
+	h.vectorOffsets = append(h.vectorOffsets, offset)
 
 	h.nodes = append(h.nodes, n)
 	h.idToNode[id] = nodeIdx
@@ -214,7 +226,7 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 			// Prune neighbor if it exceeds max connections
 			if len(h.nodes[neighborIdx].friends[lc]) > maxConn {
 				h.nodes[neighborIdx].friends[lc] = h.pruneConnections(
-					h.nodes[neighborIdx].vector, h.nodes[neighborIdx].friends[lc], maxConn)
+					h.nodeVector(neighborIdx), h.nodes[neighborIdx].friends[lc], maxConn)
 			}
 		}
 
@@ -343,7 +355,7 @@ func (h *HNSWIndex) Rebuild() error {
 			liveNodes = append(liveNodes, struct {
 				id  uint64
 				vec []float32
-			}{n.id, n.vector})
+			}{n.id, h.nodeVector(nodeIdx)})
 		}
 	}
 
@@ -407,13 +419,13 @@ type candidate struct {
 // greedyClosest performs a greedy walk from ep at the given layer,
 // returning the node closest to the query.
 func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
-	epDist := h.distFn(query, h.nodes[ep].vector)
+	epDist := h.distFn(query, h.nodeVector(ep))
 	changed := true
 	for changed {
 		changed = false
 		if layer < len(h.nodes[ep].friends) {
 			for _, friendIdx := range h.nodes[ep].friends[layer] {
-				d := h.distFn(query, h.nodes[friendIdx].vector)
+				d := h.distFn(query, h.nodeVector(friendIdx))
 				if d < epDist {
 					ep = friendIdx
 					epDist = d
@@ -430,7 +442,7 @@ func (h *HNSWIndex) greedyClosest(query []float32, ep int, layer int) int {
 func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef int, layer int, visited map[int]bool) []candidate {
 	visited[ep] = true
 
-	epDist := h.distFn(query, h.nodes[ep].vector)
+	epDist := h.distFn(query, h.nodeVector(ep))
 
 	// candidateHeap: min-heap of unexplored candidates
 	cands := &minCandHeap{{nodeIdx: ep, dist: epDist}}
@@ -470,7 +482,7 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 				// Build contiguous vector buffer
 				batchVecs = batchVecs[:len(unvisited)*h.dim]
 				for i, fi := range unvisited {
-					copy(batchVecs[i*h.dim:], h.nodes[fi].vector)
+					copy(batchVecs[i*h.dim:], h.nodeVector(fi))
 				}
 				dists = dists[:len(unvisited)]
 				distance.BatchDistance(query, batchVecs, len(unvisited), h.dim, h.metric, dists)
@@ -523,12 +535,12 @@ func (h *HNSWIndex) selectNeighborsHeuristic(query []float32, candidates []candi
 			break
 		}
 		// Accept this candidate if it is closer to the query than to any already-selected neighbor.
-		cv := h.nodes[c.nodeIdx].vector
+		cv := h.nodeVector(c.nodeIdx)
 		distToCandQuery := c.dist
 
 		closer := false
 		for _, rIdx := range result {
-			rv := h.nodes[rIdx].vector
+			rv := h.nodeVector(rIdx)
 			if h.distFn(cv, rv) < distToCandQuery {
 				closer = true
 				break
@@ -550,7 +562,7 @@ func (h *HNSWIndex) pruneConnections(nodeVec []float32, friends []int, maxConn i
 	// Create candidates from friends
 	candidates := make([]candidate, len(friends))
 	for i, f := range friends {
-		candidates[i] = candidate{nodeIdx: f, dist: h.distFn(nodeVec, h.nodes[f].vector)}
+		candidates[i] = candidate{nodeIdx: f, dist: h.distFn(nodeVec, h.nodeVector(f))}
 	}
 
 	// Sort candidates by distance (closest first)
@@ -607,9 +619,8 @@ func (h *HNSWIndex) ExportVectors() []index.ExportedVector {
 		if h.deleted[nodeIdx] {
 			continue
 		}
-		n := h.nodes[nodeIdx]
-		vec := make([]float32, len(n.vector))
-		copy(vec, n.vector)
+		vec := make([]float32, h.dim)
+		copy(vec, h.nodeVector(nodeIdx))
 		result = append(result, index.ExportedVector{ID: extID, Vector: vec})
 	}
 	return result
