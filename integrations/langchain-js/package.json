@@ -1,0 +1,20 @@
+{
+  "name": "@langchain/magnitude",
+  "version": "0.1.0",
+  "description": "LangChain.js integration for the Magnitude vector database",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": ["langchain", "vector-database", "magnitude"],
+  "license": "MIT",
+  "dependencies": {
+    "magnitude-js": ">=0.1.0",
+    "@langchain/core": ">=0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
