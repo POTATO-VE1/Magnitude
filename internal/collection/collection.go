@@ -407,6 +407,10 @@ func (m *Manager) DeleteCollection(id string) error {
 	if ivfIdx, ok := col.idx.(*ivf.IVFIndex); ok {
 		ivfIdx.Close()
 	}
+	// Close SPANN mmap resources if applicable
+	if closer, ok := col.idx.(interface{ Close() }); ok {
+		closer.Close()
+	}
 
 	if err := m.sysdb.DeleteCollection(id); err != nil {
 		return err
@@ -439,6 +443,9 @@ func (m *Manager) DeleteCollectionScoped(tenantID, collectionID string) error {
 
 	if ivfIdx, ok := col.idx.(*ivf.IVFIndex); ok {
 		ivfIdx.Close()
+	}
+	if closer, ok := col.idx.(interface{ Close() }); ok {
+		closer.Close()
 	}
 
 	if err := m.sysdb.DeleteCollectionScoped(tenantID, collectionID); err != nil {
@@ -518,6 +525,9 @@ func (m *Manager) DeleteCollectionRemote(name string) error {
 	if exists {
 		if ivfIdx, ok := c.idx.(*ivf.IVFIndex); ok {
 			ivfIdx.Close()
+		}
+		if closer, ok := c.idx.(interface{ Close() }); ok {
+			closer.Close()
 		}
 	}
 
