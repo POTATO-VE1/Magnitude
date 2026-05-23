@@ -187,13 +187,20 @@ func (s *SysDB) DeleteTenant(id string) error {
 // ── Database CRUD ───────────────────────────────────────────────────────────
 
 // CreateDatabase creates a new database under a tenant.
+// The quota check and insert are wrapped in a single transaction to prevent TOCTOU races.
 func (s *SysDB) CreateDatabase(tenantID, name string) (*Database, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("metadata: starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Check tenant exists
 	var exists bool
-	err := s.db.QueryRow("SELECT 1 FROM tenants WHERE id = ?", tenantID).Scan(&exists)
+	err = tx.QueryRow("SELECT 1 FROM tenants WHERE id = ?", tenantID).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("metadata: tenant %q not found", tenantID)
 	}
@@ -201,12 +208,12 @@ func (s *SysDB) CreateDatabase(tenantID, name string) (*Database, error) {
 		return nil, fmt.Errorf("metadata: checking tenant: %w", err)
 	}
 
-	// Check quota
+	// Check quota within the same transaction
 	var maxDBs int
-	s.db.QueryRow("SELECT max_dbs FROM tenants WHERE id = ?", tenantID).Scan(&maxDBs)
+	tx.QueryRow("SELECT max_dbs FROM tenants WHERE id = ?", tenantID).Scan(&maxDBs)
 	if maxDBs > 0 {
 		var count int
-		s.db.QueryRow("SELECT COUNT(*) FROM databases WHERE tenant_id = ?", tenantID).Scan(&count)
+		tx.QueryRow("SELECT COUNT(*) FROM databases WHERE tenant_id = ?", tenantID).Scan(&count)
 		if count >= maxDBs {
 			return nil, fmt.Errorf("metadata: tenant %q has reached max databases limit (%d)", tenantID, maxDBs)
 		}
@@ -215,12 +222,16 @@ func (s *SysDB) CreateDatabase(tenantID, name string) (*Database, error) {
 	id := uuid.New().String()
 	now := time.Now().Unix()
 
-	_, err = s.db.Exec(
+	_, err = tx.Exec(
 		"INSERT INTO databases (id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)",
 		id, tenantID, name, now,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("metadata: creating database %q: %w", name, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("metadata: committing database creation: %w", err)
 	}
 
 	return &Database{
