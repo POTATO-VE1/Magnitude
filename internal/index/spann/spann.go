@@ -4,16 +4,16 @@
 //
 // Architecture (modeled after ChromaDB Cloud's production SPANN):
 //
-//   ┌──────────────────────────────────┐
-//   │         Centroid HNSW            │  ← in-RAM graph of K centroids
-//   │  (small: K nodes, each = centroid)│
-//   └──────────┬───────────────────────┘
-//              │ search yields top-C closest centroids
-//              ▼
-//   ┌──────────────────────────────────┐
-//   │       Posting Lists              │  ← per-centroid vector lists
-//   │  postings[c] = [(id, vec), ...]  │     (could be on disk for billion-scale)
-//   └──────────────────────────────────┘
+//	┌──────────────────────────────────┐
+//	│         Centroid HNSW            │  ← in-RAM graph of K centroids
+//	│  (small: K nodes, each = centroid)│
+//	└──────────┬───────────────────────┘
+//	           │ search yields top-C closest centroids
+//	           ▼
+//	┌──────────────────────────────────┐
+//	│       Posting Lists              │  ← per-centroid vector lists
+//	│  postings[c] = [(id, vec), ...]  │     (could be on disk for billion-scale)
+//	└──────────────────────────────────┘
 //
 // Query flow:
 //  1. Search centroid HNSW for closest C centroids (C = nprobe)
@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/POTATO-VE1/Magnitude/internal/distance"
 	vdberrors "github.com/POTATO-VE1/Magnitude/internal/errors"
@@ -47,18 +48,18 @@ type posting struct {
 
 // SPANNIndex implements the Index interface using centroid HNSW + posting lists.
 type SPANNIndex struct {
-	mu         sync.RWMutex
-	dim        int
-	metric     string
-	distFn     distance.DistanceFunc
-	numCents   int // number of centroids
-	nprobe     int // default number of posting lists to scan
+	mu       sync.RWMutex
+	dim      int
+	metric   string
+	distFn   distance.DistanceFunc
+	numCents int // number of centroids
+	nprobe   int // default number of posting lists to scan
 
 	// centroidHNSW navigates to the nearest centroids in O(log K)
 	centroidHNSW *hnsw.HNSWIndex
 	// centroids[i] = centroid vector for cluster i
 	centroids [][]float32
-	
+
 	// Disk-backed posting lists
 	store     *MmapPostingStore
 	storePath string
@@ -136,7 +137,7 @@ func (s *SPANNIndex) Insert(id uint64, vector []float32) error {
 		return nil
 	}
 
-	// We cannot directly append to disk in SPANN. 
+	// We cannot directly append to disk in SPANN.
 	// In a real implementation we would buffer to a delta index.
 	// For simplicity, we just add it to dirtyBuf until next rebuild.
 	s.dirtyBuf = append(s.dirtyBuf, posting{id: id, vector: vec})
@@ -182,7 +183,7 @@ func (s *SPANNIndex) Search(ctx context.Context, query []float32, k int, nprobe 
 
 	for _, cr := range centroidResults {
 		centIdx := int(cr.ID)
-		
+
 		posts, err := s.store.GetPostings(centIdx)
 		if err != nil {
 			return nil, err
@@ -356,7 +357,7 @@ func (s *SPANNIndex) Rebuild() error {
 	if err := WritePostings(s.storePath, postings, s.dim); err != nil {
 		return err
 	}
-	
+
 	newStore, err := NewMmapPostingStore(s.storePath, s.dim)
 	if err != nil {
 		return err
@@ -444,7 +445,7 @@ func (s *SPANNIndex) bruteForceSearch(query []float32, k int) ([]index.SearchRes
 
 // kmeans performs simple K-Means clustering to find centroids.
 func (s *SPANNIndex) kmeans(data []posting, k, maxIter int) [][]float32 {
-	rng := rand.New(rand.NewSource(42))
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	n := len(data)
 
 	// Initialize centroids with random selection
