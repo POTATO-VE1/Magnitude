@@ -1,105 +1,128 @@
 # Magnitude
 
-A fast, self-hosted vector database written in Go with a built-in Web UI for semantic image search.
+A fast, self-hosted vector database written in Go. Single binary, zero dependencies.
 
 ![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.9+-3776AB?logo=python&logoColor=white)
 
-## Quickstart
+## Quickstart — Vector Database
 
-### 1. Build and Run the Server
-
-First, clone the repository:
 ```bash
 git clone https://github.com/POTATO-VE1/Magnitude.git
 cd Magnitude
-```
-
-**Native (Go 1.25+):**
-```bash
 make build
-make run    # Server starts on http://localhost:8080
+./magnitude          # http://localhost:8080
 ```
 
-**Docker:**
-```bash
-docker compose up --build -d  # Server starts on http://localhost:8080
-```
+That's it. No Docker, no Python, no external services.
 
-### 2. Install the Client & UI
-
-Requires Python 3.9+. We use `--extra-index-url` to install CPU-only PyTorch to avoid massive GPU binaries.
+### Python Client
 
 ```bash
-cd python-client
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -c constraints-cpu.txt -e ".[all]"
+pip install magnitude-client
 ```
-
-### 3. Ingest Images & Search
-
-Download a sample dataset (e.g., MS-COCO) and ingest it:
-
-**Option A: Quick Test (~5k images, 1GB)**
-```bash
-wget http://images.cocodataset.org/zips/val2017.zip
-unzip val2017.zip -d ./images
-magnitude-ingest --dir ./images/val2017 --host http://localhost:8080
-```
-
-**Option B: Full Scale Test (~118k images, 18GB)**
-```bash
-wget http://images.cocodataset.org/zips/train2017.zip
-unzip train2017.zip -d ./images
-magnitude-ingest --dir ./images/train2017 --host http://localhost:8080 --batch-size 64
-```
-
-**Start the Web UI:**
-```bash
-magnitude-ui
-```
-Open **http://localhost:3333** to search your images using text queries (e.g., "a red car").
-
----
-
-## Client Usage
-
-### Python
 
 ```python
-from magnitude import VectorDBClient, SigLIPEmbedder
+from magnitude import VectorDBClient
 
-embedder = SigLIPEmbedder()
 client = VectorDBClient("http://localhost:8080")
-
-col = client.create_collection("my-images", dimension=768)
-vectors = embedder.embed_images(["cat.jpg", "dog.jpg"])
-client.insert(col.id, ids=[1, 2], vectors=vectors, metadata=[{"filename": "cat.jpg"}, {"filename": "dog.jpg"}])
-
-results = client.search(col.id, query=embedder.embed_text("a cute cat"), top_k=5)
-for r in results:
-    print(f"File: {r.metadata['filename']}, Score: {r.score:.4f}")
+col = client.create_collection("docs", dimension=768, metric="cosine")
+client.insert(col.id, ids=[1, 2], vectors=[vec1, vec2], metadata=[{"title": "doc1"}, {"title": "doc2"}])
+results = client.search(col.id, query=query_vec, top_k=10)
 ```
 
-### Go
+### Go Client
 
 ```go
 import "github.com/POTATO-VE1/Magnitude/pkg/client"
 
 c := client.New("http://localhost:8080", "")
 col, _ := c.CreateCollection(ctx, "docs", 128, "cosine", "hnsw")
-_ = c.Insert(ctx, col.ID, ids, vectors)
+c.Insert(ctx, col.ID, ids, vectors)
 results, _ := c.Search(ctx, col.ID, query, 10, 0)
+```
+
+### REST API
+
+```bash
+# Create collection
+curl -X POST http://localhost:8080/v1/collections \
+  -H "Content-Type: application/json" \
+  -d '{"name": "docs", "dimension": 768, "metric": "cosine"}'
+
+# Insert vectors
+curl -X POST http://localhost:8080/v1/collections/{id}/add \
+  -H "Content-Type: application/json" \
+  -d '{"ids": [1], "vectors": [[0.1, 0.2, ...]], "metadata": [{"key": "value"}]}'
+
+# Search
+curl -X POST http://localhost:8080/v1/collections/{id}/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": [0.1, 0.2, ...], "k": 10}'
 ```
 
 ---
 
-## Configuration & Production
+## Image Search (Optional)
 
-All settings are managed in `config.yaml`. Data is persisted in `./data`.
+Semantic image search using SigLIP embeddings. Requires Python + PyTorch.
 
-To secure for production, edit `config.yaml`:
+### Setup
+
+```bash
+cd python-client
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -c constraints-cpu.txt -e ".[image-search]"
+```
+
+### Ingest & Search
+
+```bash
+# Download sample images
+wget http://images.cocodataset.org/zips/val2017.zip
+unzip val2017.zip -d ./images
+
+# Ingest
+magnitude-ingest --dir ./images/val2017 --host http://localhost:8080
+
+# Start web UI
+magnitude-ui
+# Open http://localhost:3333
+```
+
+### Python API
+
+```python
+from magnitude import VectorDBClient
+from magnitude import SigLIPEmbedder  # requires pip install magnitude-client[embed]
+
+embedder = SigLIPEmbedder()
+client = VectorDBClient("http://localhost:8080")
+
+col = client.create_collection("images", dimension=768)
+vectors = embedder.embed_images(["cat.jpg", "dog.jpg"])
+client.insert(col.id, ids=[1, 2], vectors=vectors)
+
+results = client.search(col.id, query=embedder.embed_text("a cute cat"), top_k=5)
+```
+
+---
+
+## Features
+
+- **Pluggable indexes**: Flat, IVF, HNSW, SPANN, Sparse
+- **Hybrid search**: Dense + sparse vectors with RRF fusion
+- **Multi-tenancy**: Tenant → Database → Collection hierarchy with quotas
+- **Pre-filtered HNSW**: Metadata filtering during graph traversal, not post-filter
+- **CGO AVX2 SIMD**: Hardware-accelerated distance computation on x86-64
+- **Clustering**: Gossip protocol, consistent hashing, automatic data migration
+- **WAL durability**: SQLite WAL + optional S3 WAL for distributed setups
+
+## Configuration
+
+All settings in `config.yaml`. Data persisted in `./data`.
+
 ```yaml
 server:
   addr: ":8443"
@@ -110,7 +133,7 @@ auth:
     - "<SHA-256 hash of your API key>"
 ```
 
-For distributed clustering, WAL internals, and indexing architecture, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+For clustering, WAL internals, and indexing architecture, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## License
 MIT
