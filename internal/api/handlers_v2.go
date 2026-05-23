@@ -96,7 +96,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 
 	tenant, err := h.manager.SysDB().CreateTenant(req.Name, req.MaxDBs, req.MaxColls)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, Envelope{Error: err.Error()})
+		writeError(w, http.StatusConflict, "tenant creation failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, Envelope{Data: tenant})
@@ -106,7 +106,7 @@ func (h *Handler) CreateTenant(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.manager.SysDB().ListTenants()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to list tenants", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: tenants})
@@ -120,7 +120,7 @@ func (h *Handler) GetTenant(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenant")
 	tenant, err := h.manager.SysDB().GetTenant(tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to get tenant", err.Error())
 		return
 	}
 	if tenant == nil {
@@ -137,7 +137,7 @@ func (h *Handler) DeleteTenantEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := chi.URLParam(r, "tenant")
 	if err := h.manager.SysDB().DeleteTenant(tenantID); err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "tenant not found", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: map[string]string{"deleted": tenantID}})
@@ -169,7 +169,7 @@ func (h *Handler) CreateDatabaseEndpoint(w http.ResponseWriter, r *http.Request)
 
 	database, err := h.manager.SysDB().CreateDatabase(tenantID, req.Name)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, Envelope{Error: err.Error()})
+		writeError(w, http.StatusConflict, "database creation failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, Envelope{Data: database})
@@ -183,7 +183,7 @@ func (h *Handler) ListDatabases(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "tenant")
 	dbs, err := h.manager.SysDB().ListDatabases(tenantID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to list databases", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: dbs})
@@ -205,7 +205,7 @@ func (h *Handler) DeleteDatabaseEndpoint(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := h.manager.SysDB().DeleteDatabase(dbID); err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "database not found", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: map[string]string{"deleted": dbID}})
@@ -282,7 +282,7 @@ func (h *Handler) CreateCollectionScoped(w http.ResponseWriter, r *http.Request)
 
 	col, err := h.manager.CreateCollectionScoped(tenantID, dbID, req.Name, req.Dimension, req.Metric, req.IndexType)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, Envelope{Error: err.Error()})
+		writeError(w, http.StatusConflict, "collection creation failed", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, Envelope{Data: col})
@@ -297,7 +297,7 @@ func (h *Handler) ListCollectionsScoped(w http.ResponseWriter, r *http.Request) 
 
 	cols, err := h.manager.ListCollectionsScoped(tenantID, dbID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to list collections", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: cols})
@@ -313,7 +313,7 @@ func (h *Handler) GetCollectionScoped(w http.ResponseWriter, r *http.Request) {
 
 	col, err := h.manager.GetCollectionScoped(tenantID, colID)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "failed to get collection", err.Error())
 		return
 	}
 	if col == nil {
@@ -333,7 +333,7 @@ func (h *Handler) DeleteCollectionScoped(w http.ResponseWriter, r *http.Request)
 	colID := chi.URLParam(r, "id")
 
 	if err := h.manager.DeleteCollectionScoped(tenantID, colID); err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "collection not found", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: map[string]string{"deleted": colID}})
@@ -376,7 +376,7 @@ func (h *Handler) InsertVectorsScoped(w http.ResponseWriter, r *http.Request) {
 
 	for _, meta := range req.Metadata {
 		if err := validateMetadata(meta); err != nil {
-			writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+			writeError(w, http.StatusBadRequest, "invalid metadata", err.Error())
 			return
 		}
 	}
@@ -433,12 +433,12 @@ func (h *Handler) InsertVectorsScoped(w http.ResponseWriter, r *http.Request) {
 		wg.Wait()
 
 		if insertErr != nil {
-			writeJSON(w, http.StatusInternalServerError, Envelope{Error: insertErr.Error()})
+			writeError(w, http.StatusInternalServerError, "insert failed", insertErr.Error())
 			return
 		}
 	} else {
 		if err := h.manager.InsertVectors(r.Context(), colID, req.IDs, req.Vectors, req.Metadata); err != nil {
-			writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+			writeError(w, http.StatusBadRequest, "insert failed", err.Error())
 			return
 		}
 	}
@@ -549,7 +549,7 @@ func (h *Handler) SearchVectorsScoped(w http.ResponseWriter, r *http.Request) {
 		var err error
 		results, err = h.manager.SearchVectors(r.Context(), colID, req.Query, req.K, req.Nprobe, req.Filter)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+			writeError(w, http.StatusBadRequest, "search failed", err.Error())
 			return
 		}
 	}
@@ -611,24 +611,24 @@ func (h *Handler) DeleteVectorScoped(w http.ResponseWriter, r *http.Request) {
 		targetNode := h.router.GetNodeForVector(colID, vecID)
 		if h.router.IsLocal(targetNode) {
 			if err := h.manager.DeleteVector(r.Context(), colID, vecID); err != nil {
-				writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+				writeError(w, http.StatusNotFound, "vector not found", err.Error())
 				return
 			}
 		} else {
 			targetAddr := h.router.GetAddress(targetNode)
 			if targetAddr == "" {
-				writeJSON(w, http.StatusInternalServerError, Envelope{Error: fmt.Sprintf("target node %s is unreachable", targetNode)})
+				writeError(w, http.StatusInternalServerError, "target node unreachable", fmt.Sprintf("node %s unreachable", targetNode))
 				return
 			}
 			dbID := chi.URLParam(r, "db")
 			if err := h.forwarder.ForwardDelete(r.Context(), targetAddr, tenantID, dbID, colID, vecID, r.Header.Get("Authorization")); err != nil {
-				writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+				writeError(w, http.StatusInternalServerError, "forward delete failed", err.Error())
 				return
 			}
 		}
 	} else {
 		if err := h.manager.DeleteVector(r.Context(), colID, vecID); err != nil {
-			writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+			writeError(w, http.StatusNotFound, "vector not found", err.Error())
 			return
 		}
 	}
@@ -674,7 +674,7 @@ func (h *Handler) HybridSearchScoped(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.manager.HybridSearch(r.Context(), colID, req.QueryEmbedding, req.QueryText, req.TopK, nprobe, req.Filter)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "hybrid search failed", err.Error())
 		return
 	}
 
