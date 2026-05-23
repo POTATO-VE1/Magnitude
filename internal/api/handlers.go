@@ -52,6 +52,7 @@ func NewRouter(cfg *config.Config, mgr *collection.Manager, rt *routing.Router, 
 	r.Use(RequestID)
 	r.Use(StructuredLog)
 	r.Use(Metrics) // Prometheus instrumentation
+	r.Use(SecurityHeaders)
 	r.Use(tenantAuth)
 	r.Use(tenantRateLimiter.Middleware)
 	r.Use(MaxBodySize(4 * 1024 * 1024)) // 4 MiB max body

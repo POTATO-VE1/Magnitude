@@ -17,8 +17,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/google/uuid"
 	obs "github.com/POTATO-VE1/Magnitude/internal/observability"
+	"github.com/google/uuid"
 )
 
 // responseWriter wraps http.ResponseWriter to capture the status code.
@@ -95,8 +95,6 @@ func StructuredLog(next http.Handler) http.Handler {
 	})
 }
 
-
-
 // MaxBodySize middleware limits the request body to maxBytes.
 func MaxBodySize(maxBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -131,3 +129,13 @@ func Metrics(next http.Handler) http.Handler {
 	})
 }
 
+// SecurityHeaders sets standard security headers on all responses.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}
