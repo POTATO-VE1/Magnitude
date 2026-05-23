@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-magnitude"
+version = "0.1.0"
+description = "LangChain integration for the Magnitude vector database"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "langchain-core>=0.1.0",
+    "magnitude-client>=0.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "langchain-core>=0.1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["langchain_magnitude"]
