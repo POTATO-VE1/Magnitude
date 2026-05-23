@@ -76,8 +76,14 @@ func main() {
 	if len(cfg.Auth.KeyHashes) == 0 {
 		slog.Warn("SECURITY: auth.keyHashes is empty — authentication is DISABLED")
 		slog.Warn("All requests will be accepted without credential verification")
-		if cfg.Server.Addr != ":8443" && cfg.Server.Addr != ":443" {
-			slog.Warn("Server is not bound to a standard HTTPS port — ensure this is intentional")
+		// Refuse to start if server is reachable beyond localhost with no auth
+		addr := cfg.Server.Addr
+		isLocalhost := strings.HasPrefix(addr, "127.0.0.1") || strings.HasPrefix(addr, "localhost") || strings.HasPrefix(addr, "[::1]")
+		if !isLocalhost {
+			slog.Error("SECURITY: cannot bind to non-localhost address with NO authentication",
+				"addr", addr,
+				"action", "set auth.keyHashes in config.yaml")
+			os.Exit(1)
 		}
 	}
 
