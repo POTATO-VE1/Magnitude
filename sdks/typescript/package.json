@@ -1,0 +1,22 @@
+{
+  "name": "magnitude-js",
+  "version": "0.1.0",
+  "description": "TypeScript client for the Magnitude vector database",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test tests/*.test.js"
+  },
+  "keywords": ["vector-database", "embeddings", "similarity-search", "semantic-search"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/POTATO-VE1/Magnitude"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  },
+  "files": ["dist"]
+}
