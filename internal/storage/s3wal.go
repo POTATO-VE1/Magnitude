@@ -3,8 +3,8 @@
 // ChromaDB's distributed WAL (wal3) is built ENTIRELY on object storage
 // with no additional locking service. The key insight:
 //
-//   S3's If-Match conditional PUT (optimistic concurrency) is used as the
-//   only coordination primitive. No ZooKeeper, no etcd, no Redis needed.
+//	S3's If-Match conditional PUT (optimistic concurrency) is used as the
+//	only coordination primitive. No ZooKeeper, no etcd, no Redis needed.
 //
 // Data structures:
 //   - Fragment: immutable file containing a subsequence of log records.
@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -30,11 +31,11 @@ import (
 
 // S3WALConfig configures the S3-backed WAL.
 type S3WALConfig struct {
-	Bucket           string        // S3 bucket name
-	Prefix           string        // key prefix (e.g., "wal3/tenant1/db1/col1")
-	FragmentBucket   int           // fragments per S3 prefix bucket (default: 4096)
-	MaxRetries       int           // retries on manifest CAS conflict (default: 5)
-	CompactThreshold int           // number of fragments before triggering compaction
+	Bucket           string // S3 bucket name
+	Prefix           string // key prefix (e.g., "wal3/tenant1/db1/col1")
+	FragmentBucket   int    // fragments per S3 prefix bucket (default: 4096)
+	MaxRetries       int    // retries on manifest CAS conflict (default: 5)
+	CompactThreshold int    // number of fragments before triggering compaction
 }
 
 // DefaultS3WALConfig returns production-safe defaults.
@@ -59,10 +60,10 @@ type Fragment struct {
 // Updated via S3 conditional PUT using ETag for compare-and-swap.
 type Manifest struct {
 	Fragments []Fragment `json:"fragments"`
-	HeadSeq   uint64     `json:"head_seq"`    // sequence ID of last acknowledged record
-	CursorSeq uint64     `json:"cursor_seq"`  // oldest unconsumed record (GC fence)
-	Version   int64      `json:"version"`     // monotonically increasing
-	ETag      string     `json:"-"`           // S3 ETag (not persisted in JSON)
+	HeadSeq   uint64     `json:"head_seq"`   // sequence ID of last acknowledged record
+	CursorSeq uint64     `json:"cursor_seq"` // oldest unconsumed record (GC fence)
+	Version   int64      `json:"version"`    // monotonically increasing
+	ETag      string     `json:"-"`          // S3 ETag (not persisted in JSON)
 }
 
 // S3WALRecord represents a single WAL entry for distributed mode.
@@ -297,19 +298,32 @@ func (w *S3WAL) writeManifest(ctx context.Context) error {
 
 	key := w.manifestKey()
 
-	if w.manifest.ETag != "" {
-		// Use conditional PUT for CAS (linearizable writes)
-		newETag, err := w.store.ConditionalPut(ctx, w.config.Bucket, key, data, w.manifest.ETag)
-		if err != nil {
-			return fmt.Errorf("s3wal: manifest CAS failed (concurrent writer?): %w", err)
-		}
-		w.manifest.ETag = newETag
-	} else {
-		// First write — no ETag to compare against
+	// First write — no ETag to compare against.
+	if w.manifest.ETag == "" {
 		if err := w.store.Put(ctx, w.config.Bucket, key, data); err != nil {
 			return err
 		}
+		return nil
 	}
 
-	return nil
+	// Conditional PUT with exponential backoff + jitter on CAS conflict.
+	var lastErr error
+	for attempt := 0; attempt < w.config.MaxRetries; attempt++ {
+		newETag, err := w.store.ConditionalPut(ctx, w.config.Bucket, key, data, w.manifest.ETag)
+		if err == nil {
+			w.manifest.ETag = newETag
+			return nil
+		}
+		lastErr = err
+
+		// Exponential backoff: 50ms, 100ms, 200ms, 400ms, … + jitter
+		base := 50 * time.Millisecond << attempt
+		jitter := time.Duration(rand.Int63n(int64(base)/2 + 1))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(base + jitter):
+		}
+	}
+	return fmt.Errorf("s3wal: manifest CAS failed after %d retries: %w", w.config.MaxRetries, lastErr)
 }
