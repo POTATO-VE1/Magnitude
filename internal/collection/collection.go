@@ -237,13 +237,17 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 
 	// Broadcast to cluster peers
 	if m.broadcaster != nil {
-		payload, _ := json.Marshal(map[string]any{
+		payload, err := json.Marshal(map[string]any{
 			"name":       name,
 			"dim":        dim,
 			"metric":     metric,
 			"index_type": indexType,
 		})
-		m.broadcaster(GossipEventCreateCollection, payload)
+		if err != nil {
+			slog.Error("failed to marshal create collection gossip", "error", err)
+		} else {
+			m.broadcaster(GossipEventCreateCollection, payload)
+		}
 	}
 
 	return meta, nil
@@ -286,13 +290,17 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 
 	// Broadcast to cluster peers
 	if m.broadcaster != nil {
-		payload, _ := json.Marshal(map[string]any{
+		payload, err := json.Marshal(map[string]any{
 			"name":       name,
 			"dim":        dim,
 			"metric":     metric,
 			"index_type": indexType,
 		})
-		m.broadcaster(GossipEventCreateCollection, payload)
+		if err != nil {
+			slog.Error("failed to marshal create collection gossip", "error", err)
+		} else {
+			m.broadcaster(GossipEventCreateCollection, payload)
+		}
 	}
 
 	return meta, nil
@@ -418,8 +426,12 @@ func (m *Manager) DeleteCollection(id string) error {
 
 	// Broadcast to cluster peers
 	if m.broadcaster != nil {
-		payload, _ := json.Marshal(map[string]string{"id": id, "name": col.meta.Name})
-		m.broadcaster(GossipEventDropCollection, payload)
+		payload, err := json.Marshal(map[string]string{"id": id, "name": col.meta.Name})
+		if err != nil {
+			slog.Error("failed to marshal delete collection gossip", "error", err)
+		} else {
+			m.broadcaster(GossipEventDropCollection, payload)
+		}
 	}
 
 	return nil
@@ -454,8 +466,12 @@ func (m *Manager) DeleteCollectionScoped(tenantID, collectionID string) error {
 
 	// Broadcast to cluster peers
 	if m.broadcaster != nil {
-		payload, _ := json.Marshal(map[string]string{"id": collectionID, "name": colName})
-		m.broadcaster(GossipEventDropCollection, payload)
+		payload, err := json.Marshal(map[string]string{"id": collectionID, "name": colName})
+		if err != nil {
+			slog.Error("failed to marshal delete collection gossip", "error", err)
+		} else {
+			m.broadcaster(GossipEventDropCollection, payload)
+		}
 	}
 
 	return nil
@@ -609,7 +625,9 @@ func (m *Manager) InsertVectors(ctx context.Context, collectionID string, ids []
 
 	// Update metadata
 	col.meta.VectorCount = col.idx.Len()
-	m.sysdb.UpdateVectorCount(collectionID, col.idx.Len())
+	if err := m.sysdb.UpdateVectorCount(collectionID, col.idx.Len()); err != nil {
+		slog.Error("failed to update vector count after insert", "collection", collectionID, "error", err)
+	}
 
 	if m.flowBus != nil {
 		m.flowBus.Notify(events.EventVectorInserted)
@@ -683,7 +701,10 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 			vIDs = append(vIDs, r.ID)
 		}
 
-		batchMeta, _ := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
+		batchMeta, err := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
+		if err != nil {
+			slog.Error("failed to load metadata for filter", "collection", collectionID, "error", err)
+		}
 
 		filtered := res[:0]
 		for _, r := range res {
@@ -800,7 +821,10 @@ func (m *Manager) HybridSearch(
 			vIDs = append(vIDs, r.DocID)
 		}
 
-		batchMeta, _ := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
+		batchMeta, err := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
+		if err != nil {
+			slog.Error("failed to load metadata for hybrid filter", "collection", collectionID, "error", err)
+		}
 
 		for _, r := range denseResults {
 			metaMap := batchMeta[r.ID]
@@ -861,13 +885,19 @@ func (m *Manager) DeleteVector(ctx context.Context, collectionID string, vectorI
 	col.invertedIndex.RemoveDocument(vectorID)
 
 	// Remove persisted metadata
-	col.sysdb.DeleteVectorMetadata(collectionID, vectorID)
+	if err := col.sysdb.DeleteVectorMetadata(collectionID, vectorID); err != nil {
+		slog.Error("failed to delete vector metadata", "vector_id", vectorID, "error", err)
+	}
 
 	// Tombstone in metadata
-	m.sysdb.AddTombstone(collectionID, vectorID)
+	if err := m.sysdb.AddTombstone(collectionID, vectorID); err != nil {
+		return fmt.Errorf("collection: adding tombstone for %d: %w", vectorID, err)
+	}
 
 	col.meta.VectorCount = col.idx.Len()
-	m.sysdb.UpdateVectorCount(collectionID, col.idx.Len())
+	if err := m.sysdb.UpdateVectorCount(collectionID, col.idx.Len()); err != nil {
+		slog.Error("failed to update vector count after delete", "collection", collectionID, "error", err)
+	}
 
 	return nil
 }
@@ -886,6 +916,7 @@ func (m *Manager) Flush() error {
 		}
 	}
 
+	var firstErr error
 	for id, col := range m.collections {
 		// Set snapshot seqID for HNSW indexes
 		if hnswIdx, ok := col.idx.(*hnsw.HNSWIndex); ok {
@@ -893,9 +924,12 @@ func (m *Manager) Flush() error {
 		}
 		if err := col.idx.Flush(); err != nil {
 			slog.Error("flush failed", "collection", id, "error", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("flush failed for collection %s: %w", id, err)
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // replayWAL replays WAL entries into the in-memory indexes.

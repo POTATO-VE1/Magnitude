@@ -78,7 +78,9 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 	allMeta, err := m.sysdb.LoadAllVectorMetadata(srcID)
 	if err == nil {
 		for id, metaMap := range allMeta {
-			m.sysdb.SaveVectorMetadata(newMeta.ID, id, metaMap)
+			if err := m.sysdb.SaveVectorMetadata(newMeta.ID, id, metaMap); err != nil {
+				slog.Error("fork: failed to copy metadata", "vector_id", id, "error", err)
+			}
 		}
 	}
 
