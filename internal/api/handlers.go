@@ -504,7 +504,9 @@ func (h *Handler) ReplicateDelete(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		slog.Error("failed to encode JSON response", "error", err, "status", status)
+	}
 }
 
 var metadataKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)

@@ -399,7 +399,9 @@ func (w *SQLiteWAL) Close() error {
 	// In delayed mode, do a final checkpoint to ensure all data is durable
 	if w.syncMode == "delayed" {
 		w.mu.Lock()
-		_, _ = w.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+		if _, err := w.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			slog.Error("wal: final checkpoint failed on close", "error", err)
+		}
 		w.mu.Unlock()
 	}
 
@@ -420,7 +422,9 @@ func (w *SQLiteWAL) delayedSyncLoop() {
 		case <-ticker.C:
 			w.mu.Lock()
 			// PASSIVE checkpoint: doesn't block readers, flushes as much as possible
-			_, _ = w.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+			if _, err := w.db.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+				slog.Warn("wal: delayed checkpoint failed", "error", err)
+			}
 			w.mu.Unlock()
 		}
 	}

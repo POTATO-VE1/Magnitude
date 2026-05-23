@@ -375,7 +375,10 @@ func (s *SysDB) DeleteCollection(id string) error {
 	if err != nil {
 		return fmt.Errorf("metadata: deleting collection %q: %w", id, err)
 	}
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metadata: checking rows affected for collection %q: %w", id, err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("metadata: collection %q not found", id)
 	}
@@ -783,7 +786,10 @@ func (s *SysDB) DeleteVectorMetadata(collectionID string, vectorID uint64) error
 		"DELETE FROM vector_metadata WHERE collection_id = ? AND vector_id = ?",
 		collectionID, vectorID,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("metadata: deleting vector metadata for %d in %s: %w", vectorID, collectionID, err)
+	}
+	return nil
 }
 
 // EnsureDefaults seeds the default tenant and database on first startup.
@@ -842,7 +848,10 @@ func (s *SysDB) DeleteCollectionScoped(tenantID, collectionID string) error {
 	if err != nil {
 		return fmt.Errorf("metadata: deleting collection %q: %w", collectionID, err)
 	}
-	affected, _ := result.RowsAffected()
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("metadata: checking rows affected for collection %q: %w", collectionID, err)
+	}
 	if affected == 0 {
 		return fmt.Errorf("metadata: collection %q not found", collectionID)
 	}
