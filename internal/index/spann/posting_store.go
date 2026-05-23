@@ -44,10 +44,13 @@ func NewMmapPostingStore(path string, dim int) (*MmapPostingStore, error) {
 
 	if fi.Size() == 0 {
 		return &MmapPostingStore{
-			file:    f,
-			data:    nil,
-			dim:     dim,
-			offsets: make(map[int]struct{ offset int64; count int }),
+			file: f,
+			data: nil,
+			dim:  dim,
+			offsets: make(map[int]struct {
+				offset int64
+				count  int
+			}),
 		}, nil
 	}
 
@@ -56,15 +59,18 @@ func NewMmapPostingStore(path string, dim int) (*MmapPostingStore, error) {
 		f.Close()
 		return nil, fmt.Errorf("spann: mmap posting store %q: %w", path, err)
 	}
-	
+
 	// Advise OS for random access since we read posting lists randomly based on search
 	unix.Madvise(data, unix.MADV_RANDOM)
 
 	store := &MmapPostingStore{
-		file:    f,
-		data:    data,
-		dim:     dim,
-		offsets: make(map[int]struct{ offset int64; count int }),
+		file: f,
+		data: data,
+		dim:  dim,
+		offsets: make(map[int]struct {
+			offset int64
+			count  int
+		}),
 	}
 
 	if err := store.readHeader(); err != nil {
@@ -77,7 +83,7 @@ func NewMmapPostingStore(path string, dim int) (*MmapPostingStore, error) {
 }
 
 // readHeader parses the footer/header to find offsets.
-// Format: 
+// Format:
 // [postings data]
 // [centroid_id uint32][offset uint64][count uint32] (repeated)
 // [num_centroids uint32]
@@ -86,10 +92,10 @@ func (s *MmapPostingStore) readHeader() error {
 	if len(data) < 4 {
 		return nil // Empty
 	}
-	
+
 	numCents := binary.LittleEndian.Uint32(data[len(data)-4:])
 	headerLen := int(numCents) * 16 // 4 + 8 + 4
-	
+
 	if len(data) < headerLen+4 {
 		return fmt.Errorf("invalid posting store file size")
 	}
@@ -101,7 +107,10 @@ func (s *MmapPostingStore) readHeader() error {
 		cid := binary.LittleEndian.Uint32(hdata[i*16 : i*16+4])
 		off := binary.LittleEndian.Uint64(hdata[i*16+4 : i*16+12])
 		cnt := binary.LittleEndian.Uint32(hdata[i*16+12 : i*16+16])
-		s.offsets[int(cid)] = struct { offset int64; count int }{int64(off), int(cnt)}
+		s.offsets[int(cid)] = struct {
+			offset int64
+			count  int
+		}{int64(off), int(cnt)}
 	}
 	return nil
 }
@@ -180,7 +189,10 @@ func WritePostings(path string, postings [][]posting, dim int) error {
 			var idBuf [8]byte
 			binary.LittleEndian.PutUint64(idBuf[:], p.id)
 			f.Write(idBuf[:])
-			
+
+			if len(p.vector) < dim {
+				return fmt.Errorf("spann: posting %d has %d floats, expected >= %d", p.id, len(p.vector), dim)
+			}
 			vecData := unsafe.Slice((*byte)(unsafe.Pointer(&p.vector[0])), dim*4)
 			f.Write(vecData)
 			offset += int64(8 + dim*4)
@@ -196,7 +208,7 @@ func WritePostings(path string, postings [][]posting, dim int) error {
 
 	// Write header
 	f.Write(header)
-	
+
 	// Write numCentroids
 	var numBuf [4]byte
 	binary.LittleEndian.PutUint32(numBuf[:], uint32(len(header)/16))
