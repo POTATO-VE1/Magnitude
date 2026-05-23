@@ -1,0 +1,602 @@
+openapi: 3.0.3
+info:
+  title: Magnitude Vector Database API
+  version: 1.0.0
+  description: REST API for the Magnitude vector database.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: API key passed as Bearer token. Set auth.keyHashes in config.yaml.
+
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data:
+          description: Response data (type varies by endpoint)
+        error:
+          type: string
+          description: Error message (only present on error)
+
+    Tenant:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        max_databases:
+          type: integer
+        max_collections:
+          type: integer
+        created_at:
+          type: integer
+          format: int64
+
+    Database:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: integer
+          format: int64
+
+    Collection:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+        database_id:
+          type: string
+        name:
+          type: string
+        dimension:
+          type: integer
+        metric:
+          type: string
+          enum: [l2, cosine, dot, manhattan]
+        index_type:
+          type: string
+          enum: [flat, ivf, hnsw, spann]
+        created_at:
+          type: integer
+          format: int64
+        vector_count:
+          type: integer
+
+    SearchResult:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: uint64
+        distance:
+          type: number
+          format: float
+        score:
+          type: number
+          format: float
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CreateTenantRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        max_databases:
+          type: integer
+          default: 0
+        max_collections:
+          type: integer
+          default: 0
+
+    CreateDatabaseRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    CreateCollectionRequest:
+      type: object
+      required: [name, dimension]
+      properties:
+        name:
+          type: string
+        dimension:
+          type: integer
+          minimum: 1
+          maximum: 65536
+        metric:
+          type: string
+          enum: [l2, cosine, dot, manhattan]
+          default: l2
+        index_type:
+          type: string
+          enum: [flat, ivf, hnsw, spann]
+          default: hnsw
+
+    InsertRequest:
+      type: object
+      required: [ids, vectors]
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            format: uint64
+        vectors:
+          type: array
+          items:
+            type: array
+            items:
+              type: number
+              format: float
+        metadata:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    SearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: array
+          items:
+            type: number
+            format: float
+        k:
+          type: integer
+          default: 10
+          maximum: 10000
+        nprobe:
+          type: integer
+          default: 0
+        filter:
+          type: object
+          additionalProperties: true
+
+    HybridSearchRequest:
+      type: object
+      required: [query, query_text]
+      properties:
+        query:
+          type: array
+          items:
+            type: number
+            format: float
+        query_text:
+          type: string
+        k:
+          type: integer
+          default: 10
+        filter:
+          type: object
+          additionalProperties: true
+
+    DeleteVectorRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            format: uint64
+
+paths:
+  # ── Health ──────────────────────────────────────────────────────────────────
+  /v1/health:
+    get:
+      summary: Health check
+      operationId: healthCheck
+      security: []
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Envelope"
+
+  # ── Tenants (Admin) ────────────────────────────────────────────────────────
+  /api/v2/tenants:
+    get:
+      summary: List all tenants
+      operationId: listTenants
+      responses:
+        "200":
+          description: List of tenants
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Tenant"
+    post:
+      summary: Create a tenant
+      operationId: createTenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+        "409":
+          description: Tenant already exists
+
+  /api/v2/tenants/{tenantId}:
+    get:
+      summary: Get tenant by ID
+      operationId: getTenant
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tenant details
+        "404":
+          description: Tenant not found
+    delete:
+      summary: Delete tenant
+      operationId: deleteTenant
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Tenant deleted
+        "404":
+          description: Tenant not found
+
+  # ── Databases (Admin) ──────────────────────────────────────────────────────
+  /api/v2/tenants/{tenantId}/databases:
+    get:
+      summary: List databases for a tenant
+      operationId: listDatabases
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of databases
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Database"
+    post:
+      summary: Create a database
+      operationId: createDatabase
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDatabaseRequest"
+      responses:
+        "201":
+          description: Database created
+        "404":
+          description: Tenant not found
+        "409":
+          description: Database already exists
+
+  /api/v2/tenants/{tenantId}/databases/{databaseId}:
+    delete:
+      summary: Delete database
+      operationId: deleteDatabase
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Database deleted
+        "404":
+          description: Database not found
+
+  # ── Collections (V2 tenant-scoped) ─────────────────────────────────────────
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections:
+    get:
+      summary: List collections
+      operationId: listCollections
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of collections
+    post:
+      summary: Create a collection
+      operationId: createCollection
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateCollectionRequest"
+      responses:
+        "201":
+          description: Collection created
+        "409":
+          description: Collection already exists
+
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections/{collectionId}:
+    get:
+      summary: Get collection
+      operationId: getCollection
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Collection details
+        "404":
+          description: Collection not found
+    delete:
+      summary: Delete collection
+      operationId: deleteCollection
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Collection deleted
+        "404":
+          description: Collection not found
+
+  # ── Vectors ────────────────────────────────────────────────────────────────
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections/{collectionId}/add:
+    post:
+      summary: Insert vectors
+      operationId: insertVectors
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InsertRequest"
+      responses:
+        "201":
+          description: Vectors inserted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          inserted:
+                            type: integer
+        "400":
+          description: Invalid request
+
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections/{collectionId}/query:
+    post:
+      summary: Search vectors
+      operationId: searchVectors
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchRequest"
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SearchResult"
+
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections/{collectionId}/delete:
+    post:
+      summary: Delete vectors
+      operationId: deleteVectors
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteVectorRequest"
+      responses:
+        "200":
+          description: Vectors deleted
+
+  /api/v2/tenants/{tenantId}/databases/{databaseId}/collections/{collectionId}/hybrid:
+    post:
+      summary: Hybrid search (dense + sparse)
+      operationId: hybridSearch
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: databaseId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HybridSearchRequest"
+      responses:
+        "200":
+          description: Hybrid search results
