@@ -354,6 +354,7 @@ func main() {
 	}
 
 	// Start HTTP server in a goroutine
+	serverErrCh := make(chan error, 1)
 	go func() {
 		slog.Info("HTTP server starting",
 			"addr", cfg.Server.Addr,
@@ -371,7 +372,7 @@ func main() {
 
 		if serverErr != nil && serverErr != http.ErrServerClosed {
 			slog.Error("HTTP server error", "error", serverErr)
-			os.Exit(1)
+			serverErrCh <- serverErr
 		}
 	}()
 
@@ -382,28 +383,31 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	for {
-		sig := <-sigCh
+		select {
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP {
+				slog.Info("SIGHUP received — reloading config", "path", *configPath)
+				newCfg, err := config.LoadConfig(*configPath)
+				if err != nil {
+					slog.Error("config reload failed — keeping current config", "error", err)
+					continue
+				}
 
-		if sig == syscall.SIGHUP {
-			slog.Info("SIGHUP received — reloading config", "path", *configPath)
-			newCfg, err := config.LoadConfig(*configPath)
-			if err != nil {
-				slog.Error("config reload failed — keeping current config", "error", err)
+				// Apply hot-reloadable settings
+				if newCfg.GC.Percent != 0 && newCfg.GC.Percent != cfg.GC.Percent {
+					old := debug.SetGCPercent(newCfg.GC.Percent)
+					slog.Info("gc percent reloaded", "percent", newCfg.GC.Percent, "previous", old)
+				}
+
+				cfg = newCfg
+				slog.Info("config reloaded successfully")
 				continue
 			}
-
-			// Apply hot-reloadable settings
-			if newCfg.GC.Percent != 0 && newCfg.GC.Percent != cfg.GC.Percent {
-				old := debug.SetGCPercent(newCfg.GC.Percent)
-				slog.Info("gc percent reloaded", "percent", newCfg.GC.Percent, "previous", old)
-			}
-
-			cfg = newCfg
-			slog.Info("config reloaded successfully")
-			continue
+		case serverErr := <-serverErrCh:
+			slog.Error("server failed, initiating shutdown", "error", serverErr)
 		}
 
-		// SIGINT or SIGTERM → 7-step graceful shutdown
+		// SIGINT, SIGTERM, or server error → graceful shutdown
 		slog.Info("shutdown signal received", "signal", sig.String())
 		break
 	}
