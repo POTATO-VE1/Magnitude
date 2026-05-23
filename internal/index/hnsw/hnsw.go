@@ -440,6 +440,12 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 	results := &maxCandHeap{{nodeIdx: ep, dist: epDist}}
 	heap.Init(results)
 
+	// Pre-allocate reusable buffers for batch distance computation
+	maxFriends := h.mMax0 // max connections on layer 0 (worst case)
+	unvisited := make([]int, 0, maxFriends)
+	batchVecs := make([]float32, 0, maxFriends*h.dim)
+	dists := make([]float32, 0, maxFriends)
+
 	for cands.Len() > 0 {
 		c := heap.Pop(cands).(candidate)
 
@@ -451,7 +457,7 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 			friends := h.nodes[c.nodeIdx].friends[layer]
 
 			// Collect unvisited friends for batch distance computation
-			unvisited := make([]int, 0, len(friends))
+			unvisited = unvisited[:0]
 			for _, friendIdx := range friends {
 				if !visited[friendIdx] {
 					visited[friendIdx] = true
@@ -462,11 +468,11 @@ func (h *HNSWIndex) searchLayer(ctx context.Context, query []float32, ep int, ef
 			// Batch compute distances for all unvisited neighbors
 			if len(unvisited) > 0 {
 				// Build contiguous vector buffer
-				batchVecs := make([]float32, len(unvisited)*h.dim)
+				batchVecs = batchVecs[:len(unvisited)*h.dim]
 				for i, fi := range unvisited {
 					copy(batchVecs[i*h.dim:], h.nodes[fi].vector)
 				}
-				dists := make([]float32, len(unvisited))
+				dists = dists[:len(unvisited)]
 				distance.BatchDistance(query, batchVecs, len(unvisited), h.dim, h.metric, dists)
 
 				// Process results
