@@ -111,9 +111,11 @@ func (mf *MappedFile) Close() error {
 	if err := mf.Flush(); err != nil {
 		return err
 	}
+	mf.Vectors = nil // invalidate before munmap to prevent use-after-free
 	if err := unix.Munmap(mf.data); err != nil {
 		return fmt.Errorf("storage: munmap: %w", err)
 	}
+	mf.data = nil
 	return mf.file.Close()
 }
 
@@ -133,12 +135,24 @@ func (mf *MappedFile) AdviseRandom() error {
 // This is zero-copy — the slice points directly into kernel page cache.
 // The returned slice must NOT be held across Flush/Close calls.
 func (mf *MappedFile) GetVector(row int) []float32 {
+	if mf.Vectors == nil {
+		return nil // file is closed
+	}
+	if row < 0 || row >= int(mf.Count) {
+		return nil // out of bounds
+	}
 	start := row * mf.Dim
 	return mf.Vectors[start : start+mf.Dim]
 }
 
 // PutVector copies a vector into the mmap'd region at the given row.
 func (mf *MappedFile) PutVector(row int, vector []float32) {
+	if mf.Vectors == nil {
+		return // file is closed
+	}
+	if row < 0 || row >= int(mf.Count) {
+		return // out of bounds
+	}
 	start := row * mf.Dim
 	copy(mf.Vectors[start:start+mf.Dim], vector)
 }
