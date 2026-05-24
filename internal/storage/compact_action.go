@@ -54,7 +54,8 @@ func WriteCompactionAction(path string, action *CompactionAction) error {
 	}
 
 	// Fsync the file to ensure durability before we start executing renames
-	f, err := os.Open(path)
+	// Use OpenFile with O_RDONLY — fsync works on read-only handles on Linux
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return fmt.Errorf("compaction action: open for fsync: %w", err)
 	}
@@ -63,6 +64,13 @@ func WriteCompactionAction(path string, action *CompactionAction) error {
 		return fmt.Errorf("compaction action: fsync: %w", err)
 	}
 	f.Close()
+
+	// Fsync directory to ensure the file entry is durably recorded
+	dir := filepath.Dir(path)
+	if dirFile, err := os.Open(dir); err == nil {
+		_ = dirFile.Sync()
+		dirFile.Close()
+	}
 
 	return nil
 }

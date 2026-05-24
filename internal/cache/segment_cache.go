@@ -100,6 +100,12 @@ func (c *SegmentCache) Put(key string, value []byte) bool {
 	// Admit to cache
 	size := int64(len(value))
 
+	// Remove from seen filter — it's now in the main cache
+	if elem, ok := c.seenFilter[key]; ok {
+		c.seenLRU.Remove(elem)
+		delete(c.seenFilter, key)
+	}
+
 	// Evict LRU entries until we have room
 	for c.currentBytes+size > c.maxBytes && c.lru.Len() > 0 {
 		c.evictLRU()

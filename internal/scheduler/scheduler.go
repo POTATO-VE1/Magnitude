@@ -146,19 +146,31 @@ func (s *Scheduler) Stop() {
 	)
 }
 
-// Submit queues a task for execution. Non-blocking — the task is buffered.
+// Submit queues a task for execution. Non-blocking — drops the task if the queue is full.
 func (s *Scheduler) Submit(t Task) {
 	switch t.Priority {
 	case PriorityHigh:
-		s.highPri <- t
+		select {
+		case s.highPri <- t:
+		default:
+			slog.Warn("scheduler: high-priority queue full, dropping task", "task", t.Name)
+		}
 	case PriorityBackground:
-		s.lowPri <- t
+		select {
+		case s.lowPri <- t:
+		default:
+			slog.Warn("scheduler: background queue full, dropping task", "task", t.Name)
+		}
 	default:
 		slog.Warn("scheduler: unknown priority, treating as background",
 			"task", t.Name,
 			"priority", t.Priority,
 		)
-		s.lowPri <- t
+		select {
+		case s.lowPri <- t:
+		default:
+			slog.Warn("scheduler: background queue full, dropping task", "task", t.Name)
+		}
 	}
 }
 
@@ -196,10 +208,12 @@ func (s *Scheduler) backgroundWorker(id int) {
 		case task := <-s.lowPri:
 			s.runTask(task, PriorityBackground)
 			// Throttle: yield CPU to foreground tasks
+			throttle := time.NewTimer(s.config.BackgroundThrottle)
 			select {
 			case <-s.ctx.Done():
+				throttle.Stop()
 				return
-			case <-time.After(s.config.BackgroundThrottle):
+			case <-throttle.C:
 			}
 		}
 	}

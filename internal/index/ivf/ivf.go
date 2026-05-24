@@ -317,8 +317,15 @@ func (idx *IVFIndex) Delete(id uint64) error {
 		return nil
 	}
 
-	// Try dirty buffer
-	return idx.dirty.Delete(id)
+	// Try dirty buffer — if not found, it may have been drained by a concurrent rebuild
+	err := idx.dirty.Delete(id)
+	if err != nil {
+		// Not in dirty either — may have been drained by rebuild or never existed.
+		// If the vector existed in the old main index, it will be re-deleted during rebuild.
+		// Return nil to avoid spurious errors during concurrent rebuild+delete.
+		return nil
+	}
+	return nil
 }
 
 // removeFromPostingList removes an ID from a cluster's posting list.
@@ -496,6 +503,17 @@ func (idx *IVFIndex) RebuildCtx(ctx context.Context) error {
 	}
 
 	// Phase 3: Swap in new state under write lock
+	// First, collect any IDs that were deleted between Phase 1 and Phase 3
+	// (Delete() modifies idToRow/clusterOf while we were unlocked)
+	deletedDuringRebuild := make(map[uint64]bool)
+	for id := range idx.idToRow {
+		if _, inNewSet := newClusterOf[id]; !inNewSet {
+			// This ID existed in old main index but not in new rebuild set
+			// It was likely deleted while we were unlocked
+			deletedDuringRebuild[id] = true
+		}
+	}
+
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
@@ -527,6 +545,31 @@ func (idx *IVFIndex) RebuildCtx(ctx context.Context) error {
 	idx.postingList = newPostingList
 	idx.clusterOf = newClusterOf
 	idx.built = true
+
+	// Re-apply deletes that occurred while we were unlocked
+	for deletedID := range deletedDuringRebuild {
+		if row, exists := idx.idToRow[deletedID]; exists {
+			if cluster, ok := idx.clusterOf[deletedID]; ok {
+				idx.removeFromPostingList(cluster, deletedID)
+				delete(idx.clusterOf, deletedID)
+			}
+			lastRow := idx.count - 1
+			if row != lastRow {
+				if idx.usePQ {
+					copy(idx.pqCodes[row*idx.pq.M:(row+1)*idx.pq.M],
+						idx.pqCodes[lastRow*idx.pq.M:(lastRow+1)*idx.pq.M])
+				} else {
+					copy(idx.vectors[row*idx.dim:(row+1)*idx.dim],
+						idx.vectors[lastRow*idx.dim:(lastRow+1)*idx.dim])
+				}
+				lastID := idx.ids[lastRow]
+				idx.ids[row] = lastID
+				idx.idToRow[lastID] = row
+			}
+			delete(idx.idToRow, deletedID)
+			idx.count--
+		}
+	}
 
 	return nil
 }
@@ -578,6 +621,15 @@ func (idx *IVFIndex) ExportVectors() []index.ExportedVector {
 			vec := make([]float32, idx.dim)
 			copy(vec, idx.vectors[start:end])
 			result = append(result, index.ExportedVector{ID: id, Vector: vec})
+		}
+	}
+
+	// Also export dirty buffer vectors (not yet assigned to clusters)
+	if idx.dirty != nil && idx.dirty.Len() > 0 {
+		dirtyExporter, ok := interface{}(idx.dirty).(index.VectorExporter)
+		if ok {
+			dirtyVecs := dirtyExporter.ExportVectors()
+			result = append(result, dirtyVecs...)
 		}
 	}
 

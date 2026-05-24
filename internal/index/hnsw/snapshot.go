@@ -2,6 +2,7 @@ package hnsw
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -269,6 +270,7 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 	}
 
 	// Reconstruct HNSWIndex
+	ctx, cancel := context.WithCancel(context.Background())
 	h := &HNSWIndex{
 		dim:            dim,
 		metric:         "l2", // default; will be overridden by caller if needed
@@ -285,7 +287,13 @@ func LoadHNSWFromSnapshot(path string) (*HNSWIndex, uint64, error) {
 		vectorOffsets:  vectorOffsets,
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
+		dirty:          make([]pendingInsert, 0, 256),
+		done:           make(chan struct{}),
+		cancel:         cancel,
 	}
+
+	// Start background applier so dirty inserts after load are drained
+	go h.backgroundApplier(ctx)
 
 	return h, hdr.SeqID, nil
 }

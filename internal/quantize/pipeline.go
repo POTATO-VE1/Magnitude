@@ -27,15 +27,17 @@ type RawVectorSource interface {
 // It implements the standard index.Index interface.
 type QuantizedIndex struct {
 	dim        int
+	metric     string
 	cal        *ScalarQuantizer
 	quantIndex InnerQuantizedIndex
 	rawSource  RawVectorSource
 }
 
 // NewQuantizedIndex creates a new quantized index wrapper.
-func NewQuantizedIndex(dim int, quantizer *ScalarQuantizer, inner InnerQuantizedIndex, raw RawVectorSource) *QuantizedIndex {
+func NewQuantizedIndex(dim int, metric string, quantizer *ScalarQuantizer, inner InnerQuantizedIndex, raw RawVectorSource) *QuantizedIndex {
 	return &QuantizedIndex{
 		dim:        dim,
+		metric:     metric,
 		cal:        quantizer,
 		quantIndex: inner,
 		rawSource:  raw,
@@ -88,7 +90,7 @@ func (idx *QuantizedIndex) Search(ctx context.Context, query []float32, k, nprob
 
 	// Stage 3: exact re-rank using float32 distances
 	exactDists := make([]float32, len(validCandidates))
-	distance.L2Batch(query, candidateVecs, len(validCandidates), idx.dim, exactDists)
+	distance.BatchDistance(query, candidateVecs, len(validCandidates), idx.dim, idx.metric, exactDists)
 
 	// Update distances to the exact ones
 	for i := range validCandidates {

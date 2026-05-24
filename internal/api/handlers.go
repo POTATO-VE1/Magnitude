@@ -156,7 +156,7 @@ type CreateCollectionRequest struct {
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 	var req CreateCollectionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
 		return
 	}
 
@@ -207,7 +207,7 @@ func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
 		cols, err = h.manager.ListCollections()
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "internal error", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, Envelope{Data: cols})
@@ -226,7 +226,7 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 		col, err = h.manager.GetCollection(id)
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "internal error", err.Error())
 		return
 	}
 	if col == nil {
@@ -269,7 +269,7 @@ func (h *Handler) InsertVectors(w http.ResponseWriter, r *http.Request) {
 
 	var req InsertVectorsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
 		return
 	}
 
@@ -288,13 +288,13 @@ func (h *Handler) InsertVectors(w http.ResponseWriter, r *http.Request) {
 
 	for _, meta := range req.Metadata {
 		if err := validateMetadata(meta); err != nil {
-			writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+			writeError(w, http.StatusBadRequest, "bad request", err.Error())
 			return
 		}
 	}
 
 	if err := h.manager.InsertVectors(r.Context(), id, req.IDs, req.Vectors, req.Metadata); err != nil {
-		writeJSON(w, http.StatusBadRequest, Envelope{Error: err.Error()})
+		writeError(w, http.StatusBadRequest, "bad request", err.Error())
 		return
 	}
 
@@ -323,7 +323,7 @@ func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 
 	var req SearchVectorsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, Envelope{Error: "invalid JSON"})
 		return
 	}
 
@@ -336,6 +336,12 @@ func (h *Handler) SearchVectors(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.K > 10000 {
 		req.K = 10000
+	}
+	if req.Nprobe < 0 {
+		req.Nprobe = 0
+	}
+	if req.Nprobe > 1000 {
+		req.Nprobe = 1000
 	}
 
 	results, err := h.manager.SearchVectors(r.Context(), id, req.Query, req.K, req.Nprobe, req.Filter)
@@ -375,7 +381,7 @@ func (h *Handler) DeleteVector(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.DeleteVector(r.Context(), colID, vecID); err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "not found", err.Error())
 		return
 	}
 
@@ -420,8 +426,14 @@ func (h *Handler) ClusterMetadata(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Build shard map from all collections
-	cols, _ := h.manager.ListCollections()
+	// Build shard map from tenant-scoped collections
+	tenantID := security.TenantID(r.Context())
+	var cols []*metadata.Collection
+	if tenantID != "" {
+		cols, _ = h.manager.ListCollectionsForTenant(tenantID)
+	} else {
+		cols, _ = h.manager.ListCollections()
+	}
 	shardMap := make(map[string]string, len(cols))
 	if cols != nil {
 		for _, col := range cols {
@@ -452,7 +464,7 @@ func (h *Handler) ReplicateInsert(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.InsertVectors(r.Context(), req.CollectionID, req.IDs, req.Vectors, req.Metadata); err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "internal error", err.Error())
 		return
 	}
 
@@ -476,7 +488,7 @@ func (h *Handler) ReplicateSearch(w http.ResponseWriter, r *http.Request) {
 
 	results, err := h.manager.SearchVectors(r.Context(), req.CollectionID, req.Query, req.K, req.Nprobe, req.Filter)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, Envelope{Error: err.Error()})
+		writeError(w, http.StatusInternalServerError, "internal error", err.Error())
 		return
 	}
 
@@ -496,7 +508,7 @@ func (h *Handler) ReplicateDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.DeleteVector(r.Context(), req.CollectionID, req.VectorID); err != nil {
-		writeJSON(w, http.StatusNotFound, Envelope{Error: err.Error()})
+		writeError(w, http.StatusNotFound, "not found", err.Error())
 		return
 	}
 
@@ -539,6 +551,15 @@ func validateMetadata(meta map[string]any) error {
 // SnapshotCollection exports a collection's full state for backup.
 func (h *Handler) SnapshotCollection(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+
+	// Tenant isolation: verify the authenticated tenant owns this collection
+	if tenantID := security.TenantID(r.Context()); tenantID != "" {
+		col, err := h.manager.GetCollectionScoped(tenantID, id)
+		if err != nil || col == nil {
+			writeJSON(w, http.StatusNotFound, Envelope{Error: "collection not found"})
+			return
+		}
+	}
 
 	snap, err := h.manager.ExportCollectionSnapshot(id)
 	if err != nil {

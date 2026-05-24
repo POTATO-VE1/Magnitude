@@ -176,6 +176,24 @@ func (s *SysDB) DeleteTenant(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Find all collection IDs for this tenant before cascade delete
+	rows, err := s.db.Query("SELECT id FROM collections WHERE tenant_id = ?", id)
+	if err != nil {
+		return fmt.Errorf("metadata: querying tenant collections: %w", err)
+	}
+	var colIDs []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err == nil {
+			colIDs = append(colIDs, cid)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("metadata: iterating tenant collections: %w", err)
+	}
+	rows.Close()
+
 	result, err := s.db.Exec("DELETE FROM tenants WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("metadata: deleting tenant %q: %w", id, err)
@@ -187,6 +205,12 @@ func (s *SysDB) DeleteTenant(id string) error {
 	if affected == 0 {
 		return fmt.Errorf("metadata: tenant %q not found", id)
 	}
+
+	// Clean up in-memory tombstone cache for all deleted collections
+	for _, cid := range colIDs {
+		delete(s.tombstones, cid)
+	}
+
 	return nil
 }
 

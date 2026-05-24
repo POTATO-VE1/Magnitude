@@ -41,8 +41,30 @@ type Collection struct {
 	meta          *metadata.Collection
 	idx           index.Index
 	invertedIndex *sparse.InvertedIndex
+	bitmapIndex   *index.MetadataBitmapIndex // fast pre-filtering bitmaps
 	wal           storage.WAL
 	sysdb         *metadata.SysDB
+}
+
+// wireBitmapDrainCallback sets up the OnDrain callback on HNSW indexes
+// so the bitmap index is updated whenever the dirty buffer is drained.
+func (c *Collection) wireBitmapDrainCallback() {
+	if hnswIdx, ok := c.idx.(*hnsw.HNSWIndex); ok {
+		bitmapIdx := c.bitmapIndex
+		sysdb := c.sysdb
+		colID := c.meta.ID
+		hnswIdx.OnDrain = func(drained map[uint64]int) {
+			for extID, nodeIdx := range drained {
+				metaMap, err := sysdb.LoadVectorMetadata(colID, extID)
+				if err != nil || metaMap == nil {
+					continue
+				}
+				for field, value := range metaMap {
+					bitmapIdx.Set(field, value, uint(nodeIdx))
+				}
+			}
+		}
+	}
 }
 
 // GossipEventKind identifies the type of gossip event for cluster dissemination.
@@ -165,9 +187,11 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (
 			meta:          meta,
 			idx:           idx,
 			invertedIndex: sparse.NewInvertedIndex(),
+			bitmapIndex:   index.NewMetadataBitmapIndex(),
 			wal:           wal,
 			sysdb:         sysdb,
 		}
+		mgr.collections[meta.ID].wireBitmapDrainCallback()
 
 		slog.Info("restored collection",
 			"id", meta.ID,
@@ -183,6 +207,9 @@ func NewManager(sysdb *metadata.SysDB, wal storage.WAL, opts ...ManagerOption) (
 	if err := mgr.replayWAL(); err != nil {
 		return nil, fmt.Errorf("collection: WAL replay failed: %w", err)
 	}
+
+	// Rebuild bitmap index for fast pre-filtered search
+	mgr.RebuildBitmapIndex()
 
 	return mgr, nil
 }
@@ -218,9 +245,11 @@ func (m *Manager) CreateCollection(name string, dim int, metric, indexType strin
 		meta:          meta,
 		idx:           idx,
 		invertedIndex: sparse.NewInvertedIndex(),
+		bitmapIndex:   index.NewMetadataBitmapIndex(),
 		wal:           m.wal,
 		sysdb:         m.sysdb,
 	}
+	m.collections[meta.ID].wireBitmapDrainCallback()
 	m.mu.Unlock()
 
 	slog.Info("collection created",
@@ -276,9 +305,11 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 		meta:          meta,
 		idx:           idx,
 		invertedIndex: sparse.NewInvertedIndex(),
+		bitmapIndex:   index.NewMetadataBitmapIndex(),
 		wal:           m.wal,
 		sysdb:         m.sysdb,
 	}
+	m.collections[meta.ID].wireBitmapDrainCallback()
 	m.mu.Unlock()
 
 	slog.Info("collection created (scoped)",
@@ -287,6 +318,10 @@ func (m *Manager) CreateCollectionScoped(tenantID, databaseID, name string, dim 
 		"database_id", databaseID,
 		"name", meta.Name,
 	)
+
+	if m.flowBus != nil {
+		m.flowBus.Notify(events.EventCollectionCreated)
+	}
 
 	// Broadcast to cluster peers
 	if m.broadcaster != nil {
@@ -411,11 +446,7 @@ func (m *Manager) DeleteCollection(id string) error {
 	delete(m.collections, id)
 	m.mu.Unlock()
 
-	// Close IVF background goroutine if applicable
-	if ivfIdx, ok := col.idx.(*ivf.IVFIndex); ok {
-		ivfIdx.Close()
-	}
-	// Close SPANN mmap resources if applicable
+	// Close index resources (IVF background goroutine, SPANN mmap, etc.)
 	if closer, ok := col.idx.(interface{ Close() }); ok {
 		closer.Close()
 	}
@@ -453,9 +484,6 @@ func (m *Manager) DeleteCollectionScoped(tenantID, collectionID string) error {
 	delete(m.collections, collectionID)
 	m.mu.Unlock()
 
-	if ivfIdx, ok := col.idx.(*ivf.IVFIndex); ok {
-		ivfIdx.Close()
-	}
 	if closer, ok := col.idx.(interface{ Close() }); ok {
 		closer.Close()
 	}
@@ -508,9 +536,11 @@ func (m *Manager) CreateCollectionRemote(name string, dim int, metric, indexType
 		meta:          meta,
 		idx:           idx,
 		invertedIndex: sparse.NewInvertedIndex(),
+		bitmapIndex:   index.NewMetadataBitmapIndex(),
 		wal:           m.wal,
 		sysdb:         m.sysdb,
 	}
+	m.collections[meta.ID].wireBitmapDrainCallback()
 	m.mu.Unlock()
 
 	slog.Info("collection created (via gossip)",
@@ -539,9 +569,6 @@ func (m *Manager) DeleteCollectionRemote(name string) error {
 	m.mu.Unlock()
 
 	if exists {
-		if ivfIdx, ok := c.idx.(*ivf.IVFIndex); ok {
-			ivfIdx.Close()
-		}
 		if closer, ok := c.idx.(interface{ Close() }); ok {
 			closer.Close()
 		}
@@ -668,7 +695,20 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 			return nil, err
 		}
 	} else {
-		// Try pre-filtered search first (HNSW only explores valid nodes)
+		// Fast path: bitmap-based pre-filtering (HNSW only explores matching nodes)
+		if fs, ok := col.idx.(index.FilteredSearcher); ok && col.bitmapIndex.Size() > 0 {
+			bitmap := col.bitmapIndex.Resolve(filter)
+			if bitmap != nil && bitmap.Any() {
+				var err error
+				results, err = fs.SearchFilteredBitmap(ctx, query, k, nprobe, bitmap)
+				if err != nil {
+					return nil, err
+				}
+				goto populateScores
+			}
+		}
+
+		// Medium path: map-based pre-filtering (SQL query for valid IDs)
 		if fs, ok := col.idx.(index.FilteredSearcher); ok {
 			validIDs, err := col.sysdb.GetFilteredVectorIDs(collectionID, filter)
 			if err == nil && len(validIDs) > 0 {
@@ -676,48 +716,49 @@ func (m *Manager) SearchVectors(ctx context.Context, collectionID string, query 
 				if err != nil {
 					return nil, err
 				}
-				// Pre-filtered results are already valid — skip post-filter
 				goto populateScores
 			}
 		}
 
-		// Fallback: post-filter (current behavior for non-HNSW indexes)
-		searchK := k * 10
-		maxK := col.idx.Len()
-		if searchK > maxK {
-			searchK = maxK
-		}
-		if searchK < 50 {
-			searchK = 50
-		}
-
-		res, err := col.idx.Search(ctx, query, searchK, nprobe)
-		if err != nil {
-			return nil, err
-		}
-
-		var vIDs []uint64
-		for _, r := range res {
-			vIDs = append(vIDs, r.ID)
-		}
-
-		batchMeta, err := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
-		if err != nil {
-			slog.Error("failed to load metadata for filter", "collection", collectionID, "error", err)
-		}
-
-		filtered := res[:0]
-		for _, r := range res {
-			metaMap := batchMeta[r.ID]
-			if filter.Match(metaMap) {
-				filtered = append(filtered, r)
+		// Slow path: post-filter (current behavior for non-HNSW indexes)
+		{
+			searchK := k * 10
+			maxK := col.idx.Len()
+			if searchK > maxK {
+				searchK = maxK
 			}
-		}
+			if searchK < 50 {
+				searchK = 50
+			}
 
-		if len(filtered) > k {
-			filtered = filtered[:k]
+			res, err := col.idx.Search(ctx, query, searchK, nprobe)
+			if err != nil {
+				return nil, err
+			}
+
+			var vIDs []uint64
+			for _, r := range res {
+				vIDs = append(vIDs, r.ID)
+			}
+
+			batchMeta, err := col.sysdb.LoadVectorMetadataBatch(collectionID, vIDs)
+			if err != nil {
+				slog.Error("failed to load metadata for filter", "collection", collectionID, "error", err)
+			}
+
+			filtered := res[:0]
+			for _, r := range res {
+				metaMap := batchMeta[r.ID]
+				if filter.Match(metaMap) {
+					filtered = append(filtered, r)
+				}
+			}
+
+			if len(filtered) > k {
+				filtered = filtered[:k]
+			}
+			results = filtered
 		}
-		results = filtered
 	}
 
 populateScores:
@@ -930,6 +971,62 @@ func (m *Manager) Flush() error {
 		}
 	}
 	return firstErr
+}
+
+// RebuildBitmapIndex rebuilds the in-memory bitmap index for all collections
+// from the SysDB metadata. Called once after WAL replay during startup.
+// This enables fast bitmap-based pre-filtering for HNSW searches.
+func (m *Manager) RebuildBitmapIndex() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for colID, col := range m.collections {
+		col.mu.Lock()
+		count := 0
+
+		// Only rebuild for HNSW indexes that support filtered search
+		if _, ok := col.idx.(index.FilteredSearcher); !ok {
+			col.mu.Unlock()
+			continue
+		}
+
+		// Get all vector metadata from SysDB
+		allMeta, err := col.sysdb.LoadAllVectorMetadata(colID)
+		if err != nil {
+			slog.Warn("bitmap index rebuild: failed to load metadata",
+				"collection", colID, "error", err)
+			col.mu.Unlock()
+			continue
+		}
+
+		// For each vector, find its HNSW node index and set bitmap bits
+		hnswIdx, isHNSW := col.idx.(*hnsw.HNSWIndex)
+		if !isHNSW {
+			col.mu.Unlock()
+			continue
+		}
+
+		for extID, metaMap := range allMeta {
+			nodeIdx, exists := hnswIdx.NodeIndex(extID)
+			if !exists {
+				continue
+			}
+			for field, value := range metaMap {
+				col.bitmapIndex.Set(field, value, uint(nodeIdx))
+				count++
+			}
+		}
+
+		col.mu.Unlock()
+
+		if count > 0 {
+			slog.Info("bitmap index rebuilt",
+				"collection", colID,
+				"entries", count,
+				"size", col.bitmapIndex.Size(),
+			)
+		}
+	}
 }
 
 // replayWAL replays WAL entries into the in-memory indexes.

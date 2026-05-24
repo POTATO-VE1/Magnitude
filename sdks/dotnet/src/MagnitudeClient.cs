@@ -47,7 +47,11 @@ public class MagnitudeClient : IDisposable
             if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) throw new NotFoundException(err);
             throw new MagnitudeException(err);
         }
-        return envelope!.Data!;
+        if (envelope?.Data == null)
+        {
+            throw new MagnitudeException("Server returned empty data");
+        }
+        return envelope.Data;
     }
 
     public async Task<Tenant> CreateTenantAsync(string name) =>

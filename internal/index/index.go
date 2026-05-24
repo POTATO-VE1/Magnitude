@@ -79,4 +79,8 @@ type ExportedVector struct {
 // Checked via type assertion: if fs, ok := idx.(FilteredSearcher); ok { ... }
 type FilteredSearcher interface {
 	SearchFiltered(ctx context.Context, query []float32, k, nprobe int, validIDs map[uint64]bool) ([]SearchResult, error)
+	// SearchFilteredBitmap is the optimized version that uses a roaring/bitset
+	// bitmap of internal node indices instead of a map of external IDs.
+	// This is 10-100x faster for selective filters.
+	SearchFilteredBitmap(ctx context.Context, query []float32, k, nprobe int, filter *FilterBitmap) ([]SearchResult, error)
 }

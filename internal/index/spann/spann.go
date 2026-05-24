@@ -256,13 +256,28 @@ func (s *SPANNIndex) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	total := len(s.dirtyBuf)
+	count := 0
+	// Count live vectors in posting store
 	if s.store != nil {
-		for _, meta := range s.store.offsets {
-			total += meta.count
+		for cid := range s.store.offsets {
+			posts, err := s.store.GetPostings(cid)
+			if err != nil {
+				continue
+			}
+			for _, p := range posts {
+				if !s.deleted[p.id] {
+					count++
+				}
+			}
 		}
 	}
-	return total - len(s.deleted)
+	// Count live vectors in dirty buffer
+	for _, p := range s.dirtyBuf {
+		if !s.deleted[p.id] {
+			count++
+		}
+	}
+	return count
 }
 
 // Rebuild builds the centroid HNSW and assigns all vectors to posting lists.
@@ -368,8 +383,11 @@ func (s *SPANNIndex) Flush() error {
 
 // Close cleans up the mmap store.
 func (s *SPANNIndex) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.store != nil {
 		s.store.Close()
+		s.store = nil
 	}
 	os.Remove(s.storePath)
 }

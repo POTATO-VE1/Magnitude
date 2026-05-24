@@ -61,22 +61,21 @@ func (r *Router) WriteWithConsistency(
 				return
 			}
 
-			var err error
-			if r.IsLocal(nid) {
-				err = nil
-			} else {
-				addr := r.GetAddress(nid)
-				if addr == "" {
-					err = fmt.Errorf("node %s unreachable", nid)
-				} else {
-					req := InsertRequest{
-						IDs:      ids,
-						Vectors:  vectors,
-						Metadata: meta,
-					}
-					err = forwarder.ForwardInsertBatch(ctx, addr, "", "", collectionID, req, authHeader)
+			addr := r.GetAddress(nid)
+			if addr == "" {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("node %s unreachable", nid)
 				}
+				mu.Unlock()
+				return
 			}
+			req := InsertRequest{
+				IDs:      ids,
+				Vectors:  vectors,
+				Metadata: meta,
+			}
+			err := forwarder.ForwardInsertBatch(ctx, addr, "", "", collectionID, req, authHeader)
 
 			mu.Lock()
 			if err != nil {
@@ -153,25 +152,22 @@ func (r *Router) ReadWithConsistency(
 				return
 			}
 
-			var results []index.SearchResult
-			var err error
-
-			if r.IsLocal(nid) {
-				results = nil
-			} else {
-				addr := r.GetAddress(nid)
-				if addr == "" {
-					err = fmt.Errorf("node %s unreachable", nid)
-				} else {
-					req := SearchRequest{
-						Query:  query,
-						K:      k,
-						Nprobe: nprobe,
-						Filter: filter,
-					}
-					results, err = forwarder.ForwardSearch(ctx, addr, "", "", collectionID, req, authHeader)
+			addr := r.GetAddress(nid)
+			if addr == "" {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = fmt.Errorf("node %s unreachable", nid)
 				}
+				mu.Unlock()
+				return
 			}
+			req := SearchRequest{
+				Query:  query,
+				K:      k,
+				Nprobe: nprobe,
+				Filter: filter,
+			}
+			results, err := forwarder.ForwardSearch(ctx, addr, "", "", collectionID, req, authHeader)
 
 			mu.Lock()
 			if err != nil {

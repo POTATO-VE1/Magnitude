@@ -240,11 +240,17 @@ func (km *KMeans) updateCentroids(vectors []float32, n int, assignments []int) {
 		}
 	}
 
-	// Handle empty clusters: replace with the farthest vector from its centroid
+	// Handle empty clusters: replace with the farthest vector from its centroid.
+	// Track reassigned vectors to prevent picking the same one for multiple empty clusters.
+	reassigned := make(map[int]bool)
 	for c := 0; c < km.K; c++ {
 		if counts[c] == 0 {
-			farthestIdx := km.findFarthestVector(vectors, n, assignments, newCentroids)
+			farthestIdx := km.findFarthestVector(vectors, n, assignments, newCentroids, reassigned)
+			if farthestIdx < 0 {
+				continue // no available vectors
+			}
 			copy(newCentroids[c*km.Dim:(c+1)*km.Dim], vectors[farthestIdx*km.Dim:(farthestIdx+1)*km.Dim])
+			reassigned[farthestIdx] = true
 			assignments[farthestIdx] = c
 		}
 	}
@@ -253,10 +259,14 @@ func (km *KMeans) updateCentroids(vectors []float32, n int, assignments []int) {
 }
 
 // findFarthestVector finds the vector with the greatest distance to its assigned centroid.
-func (km *KMeans) findFarthestVector(vectors []float32, n int, assignments []int, centroids []float32) int {
+// Returns -1 if all vectors are in the skip set.
+func (km *KMeans) findFarthestVector(vectors []float32, n int, assignments []int, centroids []float32, skip map[int]bool) int {
 	maxDist := float32(-1)
-	maxIdx := 0
+	maxIdx := -1
 	for i := 0; i < n; i++ {
+		if skip[i] {
+			continue
+		}
 		c := assignments[i]
 		v := vectors[i*km.Dim : (i+1)*km.Dim]
 		centroid := centroids[c*km.Dim : (c+1)*km.Dim]

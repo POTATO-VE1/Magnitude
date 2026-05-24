@@ -148,8 +148,9 @@ func isTrustedProxy(remoteAddr string) bool {
 // ── Multi-Tenancy Rate Limiter ──────────────────────────────────────────────
 
 type tenantLimiterEntry struct {
-	limiter  *rate.Limiter
-	lastSeen time.Time
+	limiter        *rate.Limiter
+	lastSeen       time.Time
+	lastQuotaFetch time.Time
 }
 
 // TenantRateLimiter provides per-tenant rate limiting using quotas from SysDB.
@@ -176,20 +177,45 @@ func NewTenantRateLimiter(sysdb *metadata.SysDB) *TenantRateLimiter {
 }
 
 // getOrCreate returns the rate limiter for a tenant, fetching the quota if needed.
+// Quotas are refreshed every 5 minutes to pick up admin changes.
+// The mutex is NOT held during the SysDB call to avoid blocking other tenants.
 func (rl *TenantRateLimiter) getOrCreate(tenantID string) *rate.Limiter {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+	const quotaTTL = 5 * time.Minute
 
+	// Fast path: check if we have a cached entry
+	rl.mu.Lock()
 	if entry, exists := rl.limiters[tenantID]; exists {
 		entry.lastSeen = time.Now()
-		return entry.limiter
-	}
+		needsRefresh := time.Since(entry.lastQuotaFetch) > quotaTTL
+		limiter := entry.limiter
+		rl.mu.Unlock()
 
-	// Default fallback quota
+		// Refresh stale quota outside the lock
+		if needsRefresh {
+			quotas, err := rl.sysdb.GetTenantQuotas(tenantID)
+			if err == nil && quotas != nil && quotas.MaxQPS > 0 {
+				rl.mu.Lock()
+				limiter.SetLimit(rate.Limit(float64(quotas.MaxQPS)))
+				limiter.SetBurst(quotas.MaxQPS)
+				if e, ok := rl.limiters[tenantID]; ok {
+					e.lastQuotaFetch = time.Now()
+				}
+				rl.mu.Unlock()
+			} else {
+				rl.mu.Lock()
+				if e, ok := rl.limiters[tenantID]; ok {
+					e.lastQuotaFetch = time.Now()
+				}
+				rl.mu.Unlock()
+			}
+		}
+		return limiter
+	}
+	rl.mu.Unlock()
+
+	// Slow path: fetch quota from SysDB (outside lock)
 	rps := 100.0
 	burst := 100
-
-	// Fetch quota from SysDB
 	quotas, err := rl.sysdb.GetTenantQuotas(tenantID)
 	if err == nil && quotas != nil && quotas.MaxQPS > 0 {
 		rps = float64(quotas.MaxQPS)
@@ -197,7 +223,20 @@ func (rl *TenantRateLimiter) getOrCreate(tenantID string) *rate.Limiter {
 	}
 
 	limiter := rate.NewLimiter(rate.Limit(rps), burst)
-	rl.limiters[tenantID] = &tenantLimiterEntry{limiter: limiter, lastSeen: time.Now()}
+
+	// Re-acquire lock to store the new entry
+	rl.mu.Lock()
+	// Double-check: another goroutine may have created it while we were unlocked
+	if existing, ok := rl.limiters[tenantID]; ok {
+		rl.mu.Unlock()
+		return existing.limiter
+	}
+	rl.limiters[tenantID] = &tenantLimiterEntry{
+		limiter:        limiter,
+		lastSeen:       time.Now(),
+		lastQuotaFetch: time.Now(),
+	}
+	rl.mu.Unlock()
 	return limiter
 }
 

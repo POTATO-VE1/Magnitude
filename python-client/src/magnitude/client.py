@@ -98,6 +98,16 @@ class VectorDBClient:
         if api_key:
             self.session.headers["Authorization"] = f"Bearer {api_key}"
 
+    def close(self):
+        """Close the underlying HTTP session."""
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
     # ── Collection operations ────────────────────────────────────────────
 
     def create_collection(
@@ -156,12 +166,25 @@ class VectorDBClient:
         except ValueError:
             pass
 
-        if not is_uuid:
-            # Look up by name
-            cols = self.list_collections()
-            for c in cols:
-                if c.name == name_or_id:
-                    return c
+        if is_uuid:
+            # Direct ID lookup — O(1) instead of listing all collections
+            try:
+                data = self._get(f"/v1/collections/{name_or_id}")
+                return Collection(
+                    id=data["id"],
+                    name=data["name"],
+                    dimension=data["dimension"],
+                    metric=data.get("metric", "l2"),
+                    index_type=data.get("index_type", "hnsw"),
+                )
+            except Exception:
+                pass
+
+        # Fallback: look up by name (requires listing all collections)
+        cols = self.list_collections()
+        for c in cols:
+            if c.name == name_or_id:
+                return c
             raise CollectionNotFoundError(f"Collection {name_or_id!r} not found")
 
         try:
@@ -227,6 +250,10 @@ class VectorDBClient:
             vectors: List of float vectors (must match collection dimension).
             metadata: Optional metadata dicts (one per vector).
         """
+        if len(ids) != len(vectors):
+            raise ValueError(f"ids length ({len(ids)}) must match vectors length ({len(vectors)})")
+        if metadata is not None and len(metadata) != len(ids):
+            raise ValueError(f"metadata length ({len(metadata)}) must match ids length ({len(ids)})")
         payload: Dict[str, Any] = {"ids": ids, "vectors": vectors}
         if metadata:
             payload["metadata"] = metadata

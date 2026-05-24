@@ -379,7 +379,7 @@ func main() {
 	}()
 
 	// ── 10b. Start gRPC server ──────────────────────────────────────────────
-	grpcAddr := ":9090"
+	grpcAddr := cfg.Server.GRPCPort
 	grpcServer := magnitudegrpc.NewServer(grpcAddr, mgr)
 	go func() {
 		if err := grpcServer.Start(); err != nil {

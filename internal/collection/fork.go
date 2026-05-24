@@ -20,6 +20,7 @@ import (
 	"log/slog"
 
 	"github.com/POTATO-VE1/Magnitude/internal/index"
+	"github.com/POTATO-VE1/Magnitude/internal/index/sparse"
 	"github.com/POTATO-VE1/Magnitude/internal/metadata"
 )
 
@@ -85,11 +86,14 @@ func (m *Manager) ForkCollection(ctx context.Context, srcID, newName string) (*m
 	}
 
 	newCol := &Collection{
-		meta:  newMeta,
-		idx:   newIdx,
-		wal:   m.wal,
-		sysdb: m.sysdb,
+		meta:          newMeta,
+		idx:           newIdx,
+		invertedIndex: sparse.NewInvertedIndex(),
+		bitmapIndex:   index.NewMetadataBitmapIndex(),
+		wal:           m.wal,
+		sysdb:         m.sysdb,
 	}
+	newCol.wireBitmapDrainCallback()
 
 	srcCol.mu.RUnlock()
 

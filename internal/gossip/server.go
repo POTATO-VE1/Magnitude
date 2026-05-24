@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -31,10 +32,16 @@ func (g *Protocol) StartUDP(secretKey string) error {
 
 	slog.Info("gossip udp server started", "port", g.config.Port)
 
+	// Store conn for cleanup in StopUDP
+	g.conn = conn
+	g.loopWg = &sync.WaitGroup{}
+
 	// Start receiver
+	g.loopWg.Add(1)
 	go g.receiveLoop(conn, secretKey)
 
 	// Start disseminator
+	g.loopWg.Add(1)
 	go g.disseminationLoop(conn, secretKey)
 
 	return nil
@@ -48,11 +55,18 @@ func (g *Protocol) StopUDP() {
 		g.running = false
 		g.mu.Unlock()
 		close(g.stopCh)
+		// Wait for both loops to exit before closing the conn
+		if g.loopWg != nil {
+			g.loopWg.Wait()
+		}
+		if g.conn != nil {
+			g.conn.Close()
+		}
 	})
 }
 
 func (g *Protocol) receiveLoop(conn *net.UDPConn, secretKey string) {
-	defer conn.Close()
+	defer g.loopWg.Done()
 
 	buf := make([]byte, 65535) // Max UDP packet size
 	for {
@@ -68,6 +82,12 @@ func (g *Protocol) receiveLoop(conn *net.UDPConn, secretKey string) {
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
+			}
+			// Check if we're shutting down
+			select {
+			case <-g.stopCh:
+				return
+			default:
 			}
 			slog.Error("gossip read error", "error", err)
 			continue

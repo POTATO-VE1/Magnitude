@@ -12,8 +12,8 @@ func (g *Protocol) bufferForDissemination(msg Message) {
 	g.bufferMu.Lock()
 	defer g.bufferMu.Unlock()
 
-	// Keep buffer bounded (e.g. last 100 messages)
-	if len(g.buffer) >= 100 {
+	// Keep buffer bounded (e.g. last 500 messages)
+	if len(g.buffer) >= 500 {
 		g.buffer = g.buffer[1:]
 	}
 	g.buffer = append(g.buffer, msg)
@@ -21,6 +21,7 @@ func (g *Protocol) bufferForDissemination(msg Message) {
 
 // disseminationLoop periodically transmits buffered messages to random peers.
 func (g *Protocol) disseminationLoop(conn *net.UDPConn, secretKey string) {
+	defer g.loopWg.Done()
 	ticker := time.NewTicker(g.config.ProbeInterval)
 	defer ticker.Stop()
 

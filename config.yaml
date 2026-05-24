@@ -12,6 +12,9 @@ server:
   # MUST be bound to localhost only in production — never expose to the internet.
   internalPort: ":9090"
 
+  # Address for gRPC server. Must differ from internalPort to avoid bind conflict.
+  grpcPort: ":9091"
+
   # TLS certificate and key. Leave empty for plain HTTP (development mode).
   # To enable HTTPS, generate a self-signed cert:
   #   mkdir -p certs && openssl req -x509 -newkey rsa:4096 \

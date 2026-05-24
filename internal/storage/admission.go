@@ -82,7 +82,8 @@ func (ac *AdmissionController) Acquire(ctx context.Context, prefix string) error
 		return nil
 	case <-ctx.Done():
 		ac.totalTimeouts.Add(1)
-		// Remove ourselves from the wait queue
+		// Remove ourselves from the wait queue and drain the channel
+		// in case Release already sent to it (prevents slot leak).
 		ac.mu.Lock()
 		q := ac.waitQueues[prefix]
 		for i, c := range q {
@@ -90,6 +91,16 @@ func (ac *AdmissionController) Acquire(ctx context.Context, prefix string) error
 				ac.waitQueues[prefix] = append(q[:i], q[i+1:]...)
 				break
 			}
+		}
+		// Drain channel: if Release already sent a slot, consume it and
+		// decrement inFlight to prevent the slot from being permanently lost.
+		select {
+		case <-ch:
+			ac.inFlight[prefix]--
+			if ac.inFlight[prefix] == 0 {
+				delete(ac.inFlight, prefix)
+			}
+		default:
 		}
 		ac.mu.Unlock()
 		return ctx.Err()

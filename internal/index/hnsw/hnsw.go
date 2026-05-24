@@ -69,6 +69,11 @@ type HNSWIndex struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	applierWg sync.WaitGroup
+
+	// OnDrain is called after the dirty buffer is drained to the main graph.
+	// Receives the mapping of external IDs to their newly assigned node indices.
+	// Used by the Collection layer to update the bitmap index.
+	OnDrain func(drained map[uint64]int)
 }
 
 // pendingInsert holds a vector waiting to be applied to the HNSW graph.
@@ -88,6 +93,18 @@ func (h *HNSWIndex) nodeVector(nodeIdx int) []float32 {
 type visitedTracker struct {
 	generations []uint32
 	currentGen  uint32
+}
+
+// nextGen increments the generation counter, resetting the tracker on wraparound.
+func (vt *visitedTracker) nextGen() {
+	vt.currentGen++
+	if vt.currentGen == 0 {
+		// Wraparound: reset all generations to 0 so old entries aren't falsely "visited"
+		for i := range vt.generations {
+			vt.generations[i] = 0
+		}
+		vt.currentGen = 1
+	}
 }
 
 // visitedPool is a sync.Pool of visited tracker bitmaps to avoid allocation overhead during searches.
@@ -243,12 +260,12 @@ func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	}
 	vt := visitedPool.Get().(*visitedTracker)
 	defer func() {
-		vt.currentGen++
+		vt.nextGen()
 		visitedPool.Put(vt)
 	}()
 
 	for lc := topLayer; lc >= 0; lc-- {
-		vt.currentGen++
+		vt.nextGen()
 		candidates := h.searchLayer(context.Background(), vector, ep, h.efConstruction, lc, vt, nil)
 		// Select neighbors using the diversity heuristic
 		maxConn := h.m
@@ -294,11 +311,12 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 		return nil, nil
 	}
 
+	// Search dirty buffer FIRST (has its own dirtyMu) to avoid ABBA deadlock
+	// with drainDirtyBuffer which acquires dirtyMu then mu.
+	dirtyResults := h.searchDirtyBuffer(query, k)
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-
-	// Always search the dirty buffer (brute-force)
-	dirtyResults := h.searchDirtyBuffer(query, k)
 
 	if h.entryPoint == -1 {
 		// No graph yet — return dirty buffer results only
@@ -326,7 +344,7 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 
 	vt := visitedPool.Get().(*visitedTracker)
 	defer func() {
-		vt.currentGen++
+		vt.nextGen()
 		visitedPool.Put(vt)
 	}()
 
@@ -373,11 +391,11 @@ func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, npro
 		return nil, nil
 	}
 
+	// Search dirty buffer FIRST (has its own dirtyMu) to avoid ABBA deadlock
+	dirtyResults := h.searchDirtyBufferFiltered(query, k, validIDs)
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-
-	// Search dirty buffer with filter
-	dirtyResults := h.searchDirtyBufferFiltered(query, k, validIDs)
 
 	if h.entryPoint == -1 {
 		return dirtyResults, nil
@@ -404,7 +422,7 @@ func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, npro
 
 	vt := visitedPool.Get().(*visitedTracker)
 	defer func() {
-		vt.currentGen++
+		vt.nextGen()
 		visitedPool.Put(vt)
 	}()
 
@@ -433,6 +451,268 @@ func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, npro
 	}
 
 	return results, nil
+}
+
+// SearchFilteredBitmap is the optimized pre-filtered search that uses a
+// bitset bitmap of internal node indices instead of a map of external IDs.
+// The bitmap is produced by MetadataBitmapIndex.Resolve() and allows the
+// searchLayer to filter nodes with a single bit test (~1 CPU cycle) instead
+// of a map lookup (hash + compare, ~10-20 CPU cycles).
+func (h *HNSWIndex) SearchFilteredBitmap(ctx context.Context, query []float32, k, nprobe int, filter *index.FilterBitmap) ([]index.SearchResult, error) {
+	if len(query) != h.dim {
+		return nil, vdberrors.Newf(vdberrors.ErrDimensionMismatch,
+			"query dimension %d != index dimension %d", len(query), h.dim)
+	}
+	if k <= 0 || filter == nil || filter.None() {
+		return nil, nil
+	}
+
+	// Search dirty buffer FIRST (has its own dirtyMu) to avoid ABBA deadlock
+	dirtyResults := h.searchDirtyBufferBitmap(query, k, filter)
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if h.entryPoint == -1 {
+		return dirtyResults, nil
+	}
+
+	ef := h.efSearch
+	if nprobe > 0 {
+		ef = nprobe
+	}
+	if ef < k {
+		ef = k
+	}
+
+	// Phase 1: Greedy descent — find closest valid entry point using bitmap
+	ep := h.entryPoint
+	for lc := h.maxLevel; lc >= 1; lc-- {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		ep = h.greedyClosestBitmap(query, ep, lc, filter)
+	}
+
+	vt := visitedPool.Get().(*visitedTracker)
+	defer func() {
+		vt.nextGen()
+		visitedPool.Put(vt)
+	}()
+
+	// Phase 2: Beam search at layer 0 with bitmap filter
+	candidates := h.searchLayerBitmap(ctx, query, ep, ef, 0, vt, filter)
+
+	// Extract top-k
+	var results []index.SearchResult
+	for _, c := range candidates {
+		results = append(results, index.SearchResult{
+			ID:       h.nodes[c.nodeIdx].id,
+			Distance: c.dist,
+		})
+		if len(results) >= k {
+			break
+		}
+	}
+
+	for i := range results {
+		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
+	}
+
+	// Merge with dirty buffer results
+	if len(dirtyResults) > 0 {
+		results = mergeResults(results, dirtyResults, k)
+	}
+
+	return results, nil
+}
+
+// searchDirtyBufferBitmap performs brute-force filtered search on the dirty buffer.
+// The bitmap uses internal node indices, but dirty buffer entries don't have them yet.
+// So we search all dirty entries and let the caller merge/filter.
+func (h *HNSWIndex) searchDirtyBufferBitmap(query []float32, k int, filter *index.FilterBitmap) []index.SearchResult {
+	h.dirtyMu.Lock()
+	dirty := make([]pendingInsert, len(h.dirty))
+	copy(dirty, h.dirty)
+	h.dirtyMu.Unlock()
+
+	if len(dirty) == 0 {
+		return nil
+	}
+
+	dim := h.dim
+	n := len(dirty)
+	batchVecs := make([]float32, n*dim)
+	ids := make([]uint64, n)
+	for i, d := range dirty {
+		copy(batchVecs[i*dim:], d.vector)
+		ids[i] = d.id
+	}
+
+	dists := make([]float32, n)
+	distance.BatchDistance(query, batchVecs, n, dim, h.metric, dists)
+
+	results := make([]index.SearchResult, 0, n)
+	for i, id := range ids {
+		results = append(results, index.SearchResult{
+			ID:       id,
+			Distance: dists[i],
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	if len(results) > k {
+		results = results[:k]
+	}
+
+	for i := range results {
+		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
+	}
+
+	return results
+}
+
+// greedyClosestBitmap walks greedily from ep, only moving to neighbors
+// whose node index is set in the bitmap filter.
+func (h *HNSWIndex) greedyClosestBitmap(query []float32, ep int, layer int, filter *index.FilterBitmap) int {
+	epDist := h.distFn(query, h.nodeVector(ep))
+	changed := true
+	for changed {
+		changed = false
+		if layer < len(h.nodes[ep].friends) {
+			for _, friendIdx := range h.nodes[ep].friends[layer] {
+				if h.deleted[friendIdx] {
+					continue
+				}
+				// Bitmap check: O(1) bit test instead of map lookup
+				if !filter.Test(uint(friendIdx)) {
+					continue
+				}
+				d := h.distFn(query, h.nodeVector(friendIdx))
+				if d < epDist {
+					ep = friendIdx
+					epDist = d
+					changed = true
+				}
+			}
+		}
+	}
+	// Verify entry point is in the filter set
+	if !filter.Test(uint(ep)) {
+		// Find closest valid neighbor
+		bestDist := float32(math.MaxFloat32)
+		bestIdx := ep
+		if layer < len(h.nodes[ep].friends) {
+			for _, friendIdx := range h.nodes[ep].friends[layer] {
+				if h.deleted[friendIdx] || !filter.Test(uint(friendIdx)) {
+					continue
+				}
+				d := h.distFn(query, h.nodeVector(friendIdx))
+				if d < bestDist {
+					bestDist = d
+					bestIdx = friendIdx
+				}
+			}
+		}
+		ep = bestIdx
+	}
+	return ep
+}
+
+// searchLayerBitmap performs beam search at a single layer using bitmap filtering.
+// The bitmap allows checking node validity with a single bit test instead of a map lookup.
+func (h *HNSWIndex) searchLayerBitmap(ctx context.Context, query []float32, ep int, ef int, layer int, vt *visitedTracker, filter *index.FilterBitmap) []candidate {
+	// Ensure tracker is large enough
+	if ep >= len(vt.generations) {
+		newGen := make([]uint32, ep+1024)
+		copy(newGen, vt.generations)
+		vt.generations = newGen
+	}
+	vt.generations[ep] = vt.currentGen
+
+	epDist := h.distFn(query, h.nodeVector(ep))
+
+	cands := &minCandHeap{{nodeIdx: ep, dist: epDist}}
+	heap.Init(cands)
+
+	results := &maxCandHeap{{nodeIdx: ep, dist: epDist}}
+	heap.Init(results)
+
+	maxFriends := h.mMax0
+	unvisited := make([]int, 0, maxFriends)
+	batchVecs := make([]float32, 0, maxFriends*h.dim)
+	dists := make([]float32, 0, maxFriends)
+
+	for cands.Len() > 0 {
+		c := heap.Pop(cands).(candidate)
+
+		if results.Len() >= ef && c.dist > (*results)[0].dist {
+			break
+		}
+
+		if layer < len(h.nodes[c.nodeIdx].friends) {
+			friends := h.nodes[c.nodeIdx].friends[layer]
+
+			unvisited = unvisited[:0]
+			for _, friendIdx := range friends {
+				if friendIdx >= len(vt.generations) {
+					newGen := make([]uint32, friendIdx+1024)
+					copy(newGen, vt.generations)
+					vt.generations = newGen
+				}
+				if vt.generations[friendIdx] != vt.currentGen {
+					vt.generations[friendIdx] = vt.currentGen
+					// Bitmap filter: single bit test (~1 CPU cycle)
+					if !filter.Test(uint(friendIdx)) {
+						continue
+					}
+					unvisited = append(unvisited, friendIdx)
+				}
+			}
+
+			if len(unvisited) > 0 {
+				batchVecs = batchVecs[:len(unvisited)*h.dim]
+				for i, fi := range unvisited {
+					copy(batchVecs[i*h.dim:], h.nodeVector(fi))
+				}
+				dists = dists[:len(unvisited)]
+				distance.BatchDistance(query, batchVecs, len(unvisited), h.dim, h.metric, dists)
+
+				for i, fi := range unvisited {
+					if i%100 == 0 {
+						select {
+						case <-ctx.Done():
+							sorted := make([]candidate, results.Len())
+							for j := len(sorted) - 1; j >= 0; j-- {
+								sorted[j] = heap.Pop(results).(candidate)
+							}
+							return sorted
+						default:
+						}
+					}
+					d := dists[i]
+					friend := candidate{nodeIdx: fi, dist: d}
+					if results.Len() < ef || d < (*results)[0].dist {
+						heap.Push(cands, friend)
+						heap.Push(results, friend)
+						if results.Len() > ef {
+							heap.Pop(results)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	sorted := make([]candidate, results.Len())
+	for i := len(sorted) - 1; i >= 0; i-- {
+		sorted[i] = heap.Pop(results).(candidate)
+	}
+	return sorted
 }
 
 // searchDirtyBufferFiltered performs brute-force filtered search on the dirty buffer.
@@ -488,7 +768,7 @@ func (h *HNSWIndex) searchDirtyBufferFiltered(query []float32, k int, validIDs m
 }
 
 // greedyClosestFiltered walks greedily from ep, only moving to neighbors
-// is relaxed — we just need to get close to the right region.
+// that are in the valid set. At layer 0, verifies the entry point is valid.
 func (h *HNSWIndex) greedyClosestFiltered(query []float32, ep int, layer int, validIDs map[uint64]bool) int {
 	epDist := h.distFn(query, h.nodeVector(ep))
 	changed := true
@@ -496,7 +776,7 @@ func (h *HNSWIndex) greedyClosestFiltered(query []float32, ep int, layer int, va
 		changed = false
 		if layer < len(h.nodes[ep].friends) {
 			for _, friendIdx := range h.nodes[ep].friends[layer] {
-				if h.deleted[friendIdx] {
+				if h.deleted[friendIdx] || !validIDs[h.nodes[friendIdx].id] {
 					continue
 				}
 				d := h.distFn(query, h.nodeVector(friendIdx))
@@ -556,8 +836,25 @@ func (h *HNSWIndex) Len() int {
 	return graphLen + dirtyLen
 }
 
+// NodeIndex returns the internal HNSW node index for a given external vector ID.
+// Returns -1, false if the ID is not in the main graph (may be in dirty buffer).
+// Used by the bitmap index to map external IDs to internal node indices.
+func (h *HNSWIndex) NodeIndex(id uint64) (int, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	nodeIdx, exists := h.idToNode[id]
+	if !exists || h.deleted[nodeIdx] {
+		return -1, false
+	}
+	return nodeIdx, true
+}
+
 // Rebuild reconstructs the HNSW graph from scratch, excluding deleted nodes.
 func (h *HNSWIndex) Rebuild() error {
+	// Drain dirty buffer first to avoid losing pending inserts
+	h.drainDirtyBuffer()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -621,6 +918,9 @@ func (h *HNSWIndex) Close() {
 }
 
 // searchDirtyBuffer performs brute-force search on the dirty buffer.
+// Note: Does NOT check h.idToNode/h.deleted — those are protected by h.mu.
+// Deleted nodes in the dirty buffer are filtered by the main graph's deleted set
+// after merging, or by the caller.
 func (h *HNSWIndex) searchDirtyBuffer(query []float32, k int) []index.SearchResult {
 	h.dirtyMu.Lock()
 	dirty := make([]pendingInsert, len(h.dirty))
@@ -641,7 +941,7 @@ func (h *HNSWIndex) searchDirtyBuffer(query []float32, k int) []index.SearchResu
 	dists := make([]float32, n)
 	distance.BatchDistance(query, batchVecs, n, dim, h.metric, dists)
 
-	// Build results
+	// Build results — no deleted check here (caller handles it)
 	results := make([]index.SearchResult, 0, n)
 	for i, d := range dirty {
 		results = append(results, index.SearchResult{
@@ -678,7 +978,8 @@ func mergeResults(main, dirty []index.SearchResult, k int) []index.SearchResult 
 }
 
 // drainDirtyBuffer applies all pending inserts to the main graph.
-func (h *HNSWIndex) drainDirtyBuffer() {
+// Returns a mapping of external IDs to their newly assigned node indices.
+func (h *HNSWIndex) drainDirtyBuffer() map[uint64]int {
 	h.dirtyMu.Lock()
 	batch := make([]pendingInsert, len(h.dirty))
 	copy(batch, h.dirty)
@@ -686,18 +987,28 @@ func (h *HNSWIndex) drainDirtyBuffer() {
 	h.dirtyMu.Unlock()
 
 	if len(batch) == 0 {
-		return
+		return nil
 	}
+
+	drained := make(map[uint64]int, len(batch))
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	for _, p := range batch {
+		nodeIdxBefore := len(h.nodes)
 		if err := h.insertLocked(p.id, p.vector); err != nil {
-			// Log but don't fail — the vector might already exist
 			continue
 		}
+		drained[p.id] = nodeIdxBefore
 	}
+	h.mu.Unlock()
+
+	// Notify callback AFTER releasing h.mu to avoid ABBA deadlock
+	// with bitmapIndex.mu (search holds bitmap.mu → h.mu.RLock)
+	if len(drained) > 0 && h.OnDrain != nil {
+		h.OnDrain(drained)
+	}
+
+	return drained
 }
 
 // backgroundApplier periodically drains the dirty buffer into the main graph.

@@ -57,6 +57,10 @@ func (h *HashRing) AddNode(nodeID string) {
 
 	for i := 0; i < h.vnodes; i++ {
 		hash := hashKey(fmt.Sprintf("%s#%d", nodeID, i))
+		// Skip collision — another node already owns this hash position
+		if existing, exists := h.nodeMap[hash]; exists && existing != nodeID {
+			continue
+		}
 		h.ring = append(h.ring, hash)
 		h.nodeMap[hash] = nodeID
 	}

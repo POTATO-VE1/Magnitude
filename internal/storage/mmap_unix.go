@@ -108,15 +108,16 @@ func (mf *MappedFile) Flush() error {
 
 // Close flushes, unmaps, and closes the underlying file.
 func (mf *MappedFile) Close() error {
-	if err := mf.Flush(); err != nil {
-		return err
-	}
+	flushErr := mf.Flush()
 	mf.Vectors = nil // invalidate before munmap to prevent use-after-free
-	if err := unix.Munmap(mf.data); err != nil {
+	if err := unix.Munmap(mf.data); err != nil && flushErr == nil {
 		return fmt.Errorf("storage: munmap: %w", err)
 	}
 	mf.data = nil
-	return mf.file.Close()
+	if err := mf.file.Close(); err != nil && flushErr == nil {
+		return fmt.Errorf("storage: close: %w", err)
+	}
+	return flushErr
 }
 
 // AdviseSequential tells the OS to prefetch pages sequentially.

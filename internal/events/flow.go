@@ -150,13 +150,26 @@ func (b *FlowBus) WaitForEvents(ctx context.Context, events ...FlowEvent) error 
 				}
 				mu.Unlock()
 			case <-ctx.Done():
-				return
+				mu.Lock()
+				remaining--
+				if remaining == 0 {
+					select {
+					case <-done:
+					default:
+						close(done)
+					}
+				}
+				mu.Unlock()
 			}
 		}()
 	}
 
 	select {
 	case <-done:
+		// Check if done was closed because all events arrived or because ctx was cancelled
+		if ctx.Err() != nil {
+			return fmt.Errorf("waiting for %d events: %w", len(events), ctx.Err())
+		}
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("waiting for %d events: %w", len(events), ctx.Err())

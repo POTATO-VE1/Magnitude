@@ -101,6 +101,7 @@ type SQLiteWAL struct {
 	syncDelay   time.Duration
 	pendingSync bool
 	closeCh     chan struct{}
+	closeOnce   sync.Once
 	wg          sync.WaitGroup
 }
 
@@ -386,13 +387,10 @@ func (w *SQLiteWAL) Truncate(upToSeq uint64) error {
 
 // Close flushes all pending writes and closes the underlying SQLite database.
 func (w *SQLiteWAL) Close() error {
-	// Signal delayed sync goroutine to stop
-	select {
-	case <-w.closeCh:
-		// already closed
-	default:
+	// Signal delayed sync goroutine to stop (safe to call multiple times)
+	w.closeOnce.Do(func() {
 		close(w.closeCh)
-	}
+	})
 
 	w.wg.Wait()
 

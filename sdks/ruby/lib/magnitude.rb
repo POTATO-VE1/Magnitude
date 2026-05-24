@@ -90,17 +90,20 @@ module Magnitude
     def request(method, path, body = nil)
       uri = URI.parse("#{@base_url}#{path}")
       http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = uri.scheme == "https"
+      if uri.scheme == "https"
+        http.use_ssl = true
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      end
       http.read_timeout = 30
 
       case method
       when :get
-        req = Net::HTTP::Get.new(uri.path)
+        req = Net::HTTP::Get.new(uri.request_uri)
       when :post
-        req = Net::HTTP::Post.new(uri.path)
+        req = Net::HTTP::Post.new(uri.request_uri)
         req.body = JSON.generate(body || {})
       when :delete
-        req = Net::HTTP::Delete.new(uri.path)
+        req = Net::HTTP::Delete.new(uri.request_uri)
       end
 
       req["Content-Type"] = "application/json"

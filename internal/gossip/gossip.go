@@ -14,6 +14,7 @@ package gossip
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -192,6 +193,8 @@ type Protocol struct {
 	running  bool
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	conn     *net.UDPConn   // shared UDP connection, closed by StopUDP
+	loopWg   *sync.WaitGroup // tracks receiveLoop and disseminationLoop goroutines
 
 	bufferMu sync.Mutex
 	buffer   []Message
@@ -247,9 +250,9 @@ func (g *Protocol) HandleMessage(msg Message) bool {
 		return true
 	}
 
-	// Deliver to callback (async to avoid blocking the UDP receive loop)
+	// Deliver to callback synchronously to preserve event ordering
 	if g.callback != nil {
-		go g.callback(msg)
+		g.callback(msg)
 	}
 
 	return true

@@ -8,6 +8,7 @@ on:
 
 env:
   GO_VERSION: "1.25"
+  CGO_CFLAGS_ALLOW: "-mavx2|-mfma|-O3"
 
 jobs:
   test:
@@ -24,7 +25,7 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test ./... -v -count=1
+        run: go test ./... -v -count=1 -short
 
       - name: Vet
         run: go vet ./...

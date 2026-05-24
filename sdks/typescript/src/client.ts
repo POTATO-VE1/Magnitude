@@ -24,6 +24,7 @@ export class MagnitudeClient {
   constructor(config: ClientConfig | string) {
     if (typeof config === "string") {
       this.baseUrl = config.replace(/\/$/, "");
+      this.timeout = 30000; // 30s default
     } else {
       this.baseUrl = config.baseUrl.replace(/\/$/, "");
       this.apiKey = config.apiKey;

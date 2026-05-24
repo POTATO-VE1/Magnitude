@@ -9,8 +9,9 @@ from pydantic import BaseModel
 import uvicorn
 
 # Base directory for allowed image paths. Override with MAGNITUDE_IMAGE_ROOT env var.
+# Default to current working directory instead of home directory for security.
 IMAGE_ROOT = os.path.realpath(
-    os.environ.get("MAGNITUDE_IMAGE_ROOT", os.path.expanduser("~"))
+    os.environ.get("MAGNITUDE_IMAGE_ROOT", os.getcwd())
 )
 
 # We assume the user has the standalone client or the magnitude.client available.
@@ -167,7 +168,8 @@ app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 def main():
     print("Starting Magnitude UI Server on http://localhost:3333")
-    uvicorn.run("magnitude.cli.ui:app", host="127.0.0.1", port=3333, reload=True)
+    reload = os.environ.get("MAGNITUDE_DEV", "").lower() in ("1", "true", "yes")
+    uvicorn.run("magnitude.cli.ui:app", host="127.0.0.1", port=3333, reload=reload)
 
 
 if __name__ == "__main__":

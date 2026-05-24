@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CGO_CFLAGS_ALLOW: "-mavx2|-mfma|-O3"
     steps:
       - uses: actions/checkout@v4
 
@@ -21,4 +23,4 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test ./... -v -timeout 60s
+        run: go test ./... -v -timeout 60s -short

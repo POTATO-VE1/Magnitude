@@ -308,7 +308,10 @@ func (h *Handler) GetCollectionScoped(w http.ResponseWriter, r *http.Request) {
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	col, err := h.manager.GetCollectionScoped(tenantID, colID)
@@ -329,7 +332,10 @@ func (h *Handler) DeleteCollectionScoped(w http.ResponseWriter, r *http.Request)
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	if err := h.manager.DeleteCollectionScoped(tenantID, colID); err != nil {
@@ -346,7 +352,10 @@ func (h *Handler) InsertVectorsScoped(w http.ResponseWriter, r *http.Request) {
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	// Cross-tenant isolation: verify collection ownership
@@ -451,7 +460,10 @@ func (h *Handler) SearchVectorsScoped(w http.ResponseWriter, r *http.Request) {
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	col, err := h.manager.GetCollectionScoped(tenantID, colID)
@@ -584,7 +596,10 @@ func (h *Handler) DeleteVectorScoped(w http.ResponseWriter, r *http.Request) {
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	col, err := h.manager.GetCollectionScoped(tenantID, colID)
@@ -649,7 +664,10 @@ func (h *Handler) HybridSearchScoped(w http.ResponseWriter, r *http.Request) {
 	if !checkTenantAccess(w, r) {
 		return
 	}
-	tenantID := chi.URLParam(r, "tenant")
+	tenantID, _, ok := h.resolveTenantDB(w, r)
+	if !ok {
+		return
+	}
 	colID := chi.URLParam(r, "id")
 
 	// Cross-tenant isolation

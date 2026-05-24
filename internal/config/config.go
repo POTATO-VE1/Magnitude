@@ -37,6 +37,9 @@ type ServerConfig struct {
 	// InternalPort is the address for metrics and pprof endpoints (localhost only). Default: :9090
 	InternalPort string `yaml:"internalPort"`
 
+	// GRPCPort is the address for the gRPC server. Default: :9091
+	GRPCPort string `yaml:"grpcPort"`
+
 	// CertFile is the path to the TLS certificate file.
 	CertFile string `yaml:"certFile"`
 
@@ -246,6 +249,7 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Addr:              ":8080",
 			InternalPort:      ":9090",
+			GRPCPort:          ":9091",
 			CertFile:          "",
 			KeyFile:           "",
 			ReadTimeout:       30 * time.Second,
@@ -369,9 +373,9 @@ func (c *Config) Validate() error {
 	if c.Storage.MmapCapacity <= 0 {
 		return fmt.Errorf("storage.mmapCapacity must be > 0, got %d", c.Storage.MmapCapacity)
 	}
-	validIndexTypes := map[string]bool{"flat": true, "ivf": true, "hnsw": true, "spann": true}
+	validIndexTypes := map[string]bool{"flat": true, "ivf": true, "hnsw": true, "spann": true, "ivfpq": true}
 	if !validIndexTypes[c.Index.Type] {
-		return fmt.Errorf("index.type must be one of [flat, ivf, hnsw, spann], got %q", c.Index.Type)
+		return fmt.Errorf("index.type must be one of [flat, ivf, hnsw, spann, ivfpq], got %q", c.Index.Type)
 	}
 	if c.BloomFilter.FalsePositiveRate <= 0 || c.BloomFilter.FalsePositiveRate >= 1.0 {
 		return fmt.Errorf("bloomFilter.falsePositiveRate must be in (0, 1), got %f", c.BloomFilter.FalsePositiveRate)

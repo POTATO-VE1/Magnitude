@@ -95,11 +95,12 @@ func DefaultConfig() Config {
 
 // Detector monitors cluster node health and triggers state transitions.
 type Detector struct {
-	mu      sync.RWMutex
-	config  Config
-	nodes   map[string]*trackedNode
-	running bool
-	stopCh  chan struct{}
+	mu       sync.RWMutex
+	config   Config
+	nodes    map[string]*trackedNode
+	running  bool
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // New creates a new failure detector with the given config.
@@ -140,16 +141,15 @@ func (d *Detector) Start() {
 }
 
 // Stop halts the background health checking loop.
+// Safe to call multiple times — uses sync.Once internally.
 func (d *Detector) Stop() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if !d.running {
-		return
-	}
-	d.running = false
-	close(d.stopCh)
-	slog.Info("failure detector stopped")
+	d.stopOnce.Do(func() {
+		d.mu.Lock()
+		d.running = false
+		d.mu.Unlock()
+		close(d.stopCh)
+		slog.Info("failure detector stopped")
+	})
 }
 
 // AddNode registers a node for monitoring.

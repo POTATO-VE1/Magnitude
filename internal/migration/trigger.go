@@ -34,6 +34,25 @@ func TriggerOnNodeRemoval(
 		}
 	}
 
+	// Phase 1b: Check replicas BEFORE removing the dead node from the ring.
+	// After removal, GetNodes will never return the dead node.
+	var replicaNeedsRepl []string
+	if replicationFactor > 1 {
+		for _, colID := range collectionIDs {
+			replicas := ring.GetNodes(colID, replicationFactor)
+			for _, replica := range replicas {
+				if replica == deadNodeID {
+					replicaNeedsRepl = append(replicaNeedsRepl, colID)
+					slog.Info("migration: replica needs re-replication",
+						"collection", colID,
+						"dead_replica", deadNodeID,
+					)
+					break
+				}
+			}
+		}
+	}
+
 	// Phase 2: Remove dead node from the ring so GetNode returns the new owner.
 	ring.RemoveNode(deadNodeID)
 
@@ -63,22 +82,14 @@ func TriggerOnNodeRemoval(
 				"to", newPrimary,
 			)
 		}
+	}
 
-		// Check replicas — if the dead node held a replica, we need to re-replicate
-		if replicationFactor > 1 {
-			replicas := ring.GetNodes(colID, replicationFactor)
-			for _, replica := range replicas {
-				if replica == deadNodeID {
-					slog.Info("migration: replica needs re-replication",
-						"collection", colID,
-						"dead_replica", deadNodeID,
-					)
-					// The replication is handled by the consistency layer
-					// when the next write comes in — no explicit migration needed
-					break
-				}
-			}
-		}
+	// Phase 4: Log re-replication needs (handled by consistency layer on next write)
+	if len(replicaNeedsRepl) > 0 {
+		slog.Info("migration: collections needing re-replication",
+			"count", len(replicaNeedsRepl),
+			"dead_replica", deadNodeID,
+		)
 	}
 
 	return plans

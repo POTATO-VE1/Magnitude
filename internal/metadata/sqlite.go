@@ -535,6 +535,7 @@ func (s *SysDB) Close() error {
 
 // SaveVectorMetadata persists per-vector metadata to SQLite.
 // Called during vector insertion to make metadata durable across restarts.
+// All metadata keys are written in a single transaction for atomicity.
 func (s *SysDB) SaveVectorMetadata(collectionID string, vectorID uint64, meta map[string]any) error {
 	if len(meta) == 0 {
 		return nil
@@ -543,9 +544,15 @@ func (s *SysDB) SaveVectorMetadata(collectionID string, vectorID uint64, meta ma
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("metadata: beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	for k, v := range meta {
 		valStr := fmt.Sprintf("%v", v)
-		_, err := s.db.Exec(
+		_, err := tx.Exec(
 			`INSERT OR REPLACE INTO vector_metadata (collection_id, vector_id, meta_key, meta_value)
 			 VALUES (?, ?, ?, ?)`,
 			collectionID, vectorID, k, valStr,
@@ -554,7 +561,7 @@ func (s *SysDB) SaveVectorMetadata(collectionID string, vectorID uint64, meta ma
 			return fmt.Errorf("metadata: saving vector metadata: %w", err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // LoadVectorMetadata loads metadata for a specific vector.
