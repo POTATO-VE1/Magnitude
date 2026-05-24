@@ -7,7 +7,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "test": "node --test tests/*.test.js"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "keywords": ["vector-database", "embeddings", "similarity-search", "semantic-search"],
   "license": "MIT",
@@ -16,7 +17,8 @@
     "url": "https://github.com/POTATO-VE1/Magnitude"
   },
   "devDependencies": {
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^3.0.0"
   },
   "files": ["dist"]
 }
