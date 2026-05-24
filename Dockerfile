@@ -3,6 +3,8 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
+ENV CGO_CFLAGS_ALLOW="-mavx2|-mfma|-O3"
+
 # Cache dependencies first (layer changes rarely)
 COPY go.mod go.sum ./
 RUN go mod download
@@ -40,8 +42,8 @@ COPY config.yaml /app/config.yaml
 
 USER magnitude
 
-# REST API + gRPC
-EXPOSE 8080 9090
+# REST API + gRPC + metrics
+EXPOSE 8080 9090 9091
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/v1/health || exit 1
