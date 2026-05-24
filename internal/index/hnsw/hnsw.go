@@ -62,6 +62,19 @@ type HNSWIndex struct {
 	deleted        map[int]bool // soft-delete tombstones by internal nodeIdx
 	snapshotPath   string       // file path for snapshot persistence
 	snapshotSeqID  uint64       // WAL seqID at last snapshot time
+
+	// Async indexing: dirty buffer holds pending inserts
+	dirtyMu   sync.Mutex
+	dirty     []pendingInsert // buffered inserts not yet in the graph
+	cancel    context.CancelFunc
+	done      chan struct{}
+	applierWg sync.WaitGroup
+}
+
+// pendingInsert holds a vector waiting to be applied to the HNSW graph.
+type pendingInsert struct {
+	id     uint64
+	vector []float32
 }
 
 // nodeVector returns the vector for the given node index from the contiguous slab.
@@ -110,7 +123,7 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		efSearch = 128
 	}
 
-	return &HNSWIndex{
+	h := &HNSWIndex{
 		dim:            dim,
 		metric:         metric,
 		distFn:         distFn,
@@ -127,7 +140,16 @@ func NewHNSWIndex(dim, m, efConstruction, efSearch int, metric string) (*HNSWInd
 		vectorOffsets:  make([]int, 0, 1024),
 		rng:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		deleted:        make(map[int]bool),
-	}, nil
+		dirty:          make([]pendingInsert, 0, 256),
+		done:           make(chan struct{}),
+	}
+
+	// Start background applier
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	go h.backgroundApplier(ctx)
+
+	return h, nil
 }
 
 // randomLevel generates a random level using the exponential distribution.
@@ -149,20 +171,27 @@ func (h *HNSWIndex) randomLevel() int {
 	return level
 }
 
-// Insert adds a vector with the given ID into the HNSW graph.
+// Insert adds a vector to the dirty buffer. The background applier
+// will insert it into the HNSW graph asynchronously.
 func (h *HNSWIndex) Insert(id uint64, vector []float32) error {
 	if len(vector) != h.dim {
 		return vdberrors.Newf(vdberrors.ErrDimensionMismatch,
 			"expected dimension %d, got %d", h.dim, len(vector))
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	// Copy the vector so the caller can't mutate it after Insert returns
+	vec := make([]float32, h.dim)
+	copy(vec, vector)
 
-	return h.insertLocked(id, vector)
+	h.dirtyMu.Lock()
+	h.dirty = append(h.dirty, pendingInsert{id: id, vector: vec})
+	h.dirtyMu.Unlock()
+
+	return nil
 }
 
-// insertLocked performs the actual insert. Must be called with h.mu held.
+// insertLocked performs the actual insert into the main graph.
+// Must be called with h.mu held.
 func (h *HNSWIndex) insertLocked(id uint64, vector []float32) error {
 	if nodeIdx, exists := h.idToNode[id]; exists {
 		if h.deleted[nodeIdx] {
@@ -268,8 +297,12 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	// Always search the dirty buffer (brute-force)
+	dirtyResults := h.searchDirtyBuffer(query, k)
+
 	if h.entryPoint == -1 {
-		return nil, nil
+		// No graph yet — return dirty buffer results only
+		return dirtyResults, nil
 	}
 
 	ef := h.efSearch
@@ -320,6 +353,11 @@ func (h *HNSWIndex) Search(ctx context.Context, query []float32, k int, nprobe i
 		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
 	}
 
+	// Merge with dirty buffer results
+	if len(dirtyResults) > 0 {
+		results = mergeResults(results, dirtyResults, k)
+	}
+
 	return results, nil
 }
 
@@ -338,8 +376,11 @@ func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, npro
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	// Search dirty buffer with filter
+	dirtyResults := h.searchDirtyBufferFiltered(query, k, validIDs)
+
 	if h.entryPoint == -1 {
-		return nil, nil
+		return dirtyResults, nil
 	}
 
 	ef := h.efSearch
@@ -386,11 +427,67 @@ func (h *HNSWIndex) SearchFiltered(ctx context.Context, query []float32, k, npro
 		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
 	}
 
+	// Merge with dirty buffer results
+	if len(dirtyResults) > 0 {
+		results = mergeResults(results, dirtyResults, k)
+	}
+
 	return results, nil
 }
 
+// searchDirtyBufferFiltered performs brute-force filtered search on the dirty buffer.
+func (h *HNSWIndex) searchDirtyBufferFiltered(query []float32, k int, validIDs map[uint64]bool) []index.SearchResult {
+	h.dirtyMu.Lock()
+	dirty := make([]pendingInsert, len(h.dirty))
+	copy(dirty, h.dirty)
+	h.dirtyMu.Unlock()
+
+	if len(dirty) == 0 {
+		return nil
+	}
+
+	dim := h.dim
+	n := len(dirty)
+	batchVecs := make([]float32, 0, n*dim)
+	var filteredIDs []uint64
+
+	for _, d := range dirty {
+		if validIDs[d.id] {
+			batchVecs = append(batchVecs, d.vector...)
+			filteredIDs = append(filteredIDs, d.id)
+		}
+	}
+
+	if len(filteredIDs) == 0 {
+		return nil
+	}
+
+	dists := make([]float32, len(filteredIDs))
+	distance.BatchDistance(query, batchVecs, len(filteredIDs), dim, h.metric, dists)
+
+	results := make([]index.SearchResult, 0, len(filteredIDs))
+	for i, id := range filteredIDs {
+		results = append(results, index.SearchResult{
+			ID:       id,
+			Distance: dists[i],
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	if len(results) > k {
+		results = results[:k]
+	}
+
+	for i := range results {
+		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
+	}
+
+	return results
+}
+
 // greedyClosestFiltered walks greedily from ep, only moving to neighbors
-// whose IDs are in the valid set. At higher layers (navigation), the filter
 // is relaxed — we just need to get close to the right region.
 func (h *HNSWIndex) greedyClosestFiltered(query []float32, ep int, layer int, validIDs map[uint64]bool) int {
 	epDist := h.distFn(query, h.nodeVector(ep))
@@ -446,11 +543,17 @@ func (h *HNSWIndex) Delete(id uint64) error {
 	return nil
 }
 
-// Len returns the number of live (non-deleted) vectors.
+// Len returns the number of live (non-deleted) vectors including dirty buffer.
 func (h *HNSWIndex) Len() int {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.nodes) - len(h.deleted)
+	graphLen := len(h.nodes) - len(h.deleted)
+	h.mu.RUnlock()
+
+	h.dirtyMu.Lock()
+	dirtyLen := len(h.dirty)
+	h.dirtyMu.Unlock()
+
+	return graphLen + dirtyLen
 }
 
 // Rebuild reconstructs the HNSW graph from scratch, excluding deleted nodes.
@@ -498,10 +601,125 @@ func (h *HNSWIndex) Rebuild() error {
 // Flush persists the in-memory HNSW graph to disk via snapshot.
 // SnapshotPath and SnapshotSeqID must be set before calling Flush.
 func (h *HNSWIndex) Flush() error {
+	// Drain dirty buffer synchronously before snapshotting
+	h.drainDirtyBuffer()
+
 	if h.snapshotPath == "" {
 		return nil
 	}
 	return h.SnapshotToFile(h.snapshotPath, h.snapshotSeqID)
+}
+
+// Close stops the background applier and drains remaining dirty inserts.
+func (h *HNSWIndex) Close() {
+	if h.cancel != nil {
+		h.cancel()
+		<-h.done
+	}
+	// Drain any remaining dirty inserts
+	h.drainDirtyBuffer()
+}
+
+// searchDirtyBuffer performs brute-force search on the dirty buffer.
+func (h *HNSWIndex) searchDirtyBuffer(query []float32, k int) []index.SearchResult {
+	h.dirtyMu.Lock()
+	dirty := make([]pendingInsert, len(h.dirty))
+	copy(dirty, h.dirty)
+	h.dirtyMu.Unlock()
+
+	if len(dirty) == 0 {
+		return nil
+	}
+
+	// Build contiguous vector buffer for batch distance
+	dim := h.dim
+	n := len(dirty)
+	batchVecs := make([]float32, n*dim)
+	for i, d := range dirty {
+		copy(batchVecs[i*dim:], d.vector)
+	}
+	dists := make([]float32, n)
+	distance.BatchDistance(query, batchVecs, n, dim, h.metric, dists)
+
+	// Build results
+	results := make([]index.SearchResult, 0, n)
+	for i, d := range dirty {
+		results = append(results, index.SearchResult{
+			ID:       d.id,
+			Distance: dists[i],
+		})
+	}
+
+	// Sort by distance and take top-k
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	if len(results) > k {
+		results = results[:k]
+	}
+
+	for i := range results {
+		results[i].Score = distance.ScoreFromDistance(results[i].Distance, h.metric)
+	}
+
+	return results
+}
+
+// mergeResults merges results from main graph and dirty buffer, returning top-k.
+func mergeResults(main, dirty []index.SearchResult, k int) []index.SearchResult {
+	merged := append(main, dirty...)
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Distance < merged[j].Distance
+	})
+	if len(merged) > k {
+		merged = merged[:k]
+	}
+	return merged
+}
+
+// drainDirtyBuffer applies all pending inserts to the main graph.
+func (h *HNSWIndex) drainDirtyBuffer() {
+	h.dirtyMu.Lock()
+	batch := make([]pendingInsert, len(h.dirty))
+	copy(batch, h.dirty)
+	h.dirty = h.dirty[:0]
+	h.dirtyMu.Unlock()
+
+	if len(batch) == 0 {
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for _, p := range batch {
+		if err := h.insertLocked(p.id, p.vector); err != nil {
+			// Log but don't fail — the vector might already exist
+			continue
+		}
+	}
+}
+
+// backgroundApplier periodically drains the dirty buffer into the main graph.
+func (h *HNSWIndex) backgroundApplier(ctx context.Context) {
+	defer close(h.done)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.dirtyMu.Lock()
+			dirtyLen := len(h.dirty)
+			h.dirtyMu.Unlock()
+
+			if dirtyLen > 0 {
+				h.drainDirtyBuffer()
+			}
+		}
+	}
 }
 
 // SetSnapshotPath configures the file path used by Flush for snapshot persistence.
