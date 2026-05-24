@@ -7,12 +7,19 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build (pure Go — no cgo needed, modernc.org/sqlite is native)
+# Copy source and build
+# Note: CGO is needed for SIMD distance kernels on amd64/arm64
 COPY . .
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /build/magnitude ./cmd/server/main.go
+RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /build/magnitude ./cmd/server/main.go
 
 # ── Stage 2: Production ──────────────────────────────────────────────────────
 FROM alpine:3.20
+
+LABEL org.opencontainers.image.title="Magnitude"
+LABEL org.opencontainers.image.description="Fast, self-hosted vector database"
+LABEL org.opencontainers.image.url="https://github.com/POTATO-VE1/Magnitude"
+LABEL org.opencontainers.image.source="https://github.com/POTATO-VE1/Magnitude"
+LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache ca-certificates curl
 
@@ -24,7 +31,7 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /build/magnitude /app/magnitude
 
-# Create directories for runtime data (will be overridden by volume mounts)
+# Create directories for runtime data
 RUN mkdir -p /app/data /app/certs && \
     chown -R magnitude:magnitude /app
 
@@ -33,10 +40,10 @@ COPY config.yaml /app/config.yaml
 
 USER magnitude
 
-EXPOSE 8443 9090
+# REST API + gRPC
+EXPOSE 8080 9090
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:9090/health || exit 1
+  CMD curl -f http://localhost:8080/v1/health || exit 1
 
 ENTRYPOINT ["/app/magnitude"]
-CMD ["--config", "/app/config.yaml"]

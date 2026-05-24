@@ -14,9 +14,11 @@ certs/
 
 # Python virtual environment
 python-client/venv/
+python-client/.venv/
 
 # Downloaded image datasets
 python-client/images/
+images/
 
 # Python bytecode
 __pycache__/
@@ -46,3 +48,15 @@ LICENSE
 *.tmp
 *.swp
 *.bak
+
+# Build artifacts
+magnitude
+server
+
+# Scratch
+scratch/
+
+# SDK build artifacts
+sdks/typescript/node_modules/
+sdks/typescript/dist/
+sdks/rust/target/
