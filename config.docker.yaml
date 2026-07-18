@@ -1,0 +1,189 @@
+# VectorDB Configuration
+# All values shown are the production defaults.
+# Override only what you need to change.
+
+server:
+  # Address for the API server.
+  # Default :8080 serves plain HTTP for local development.
+  # Change to :8443 when enabling TLS for production.
+  addr: ":8080"
+
+  # Address for internal metrics (Prometheus) and pprof endpoints.
+  # MUST be bound to localhost only in production — never expose to the internet.
+  internalPort: ":9090"
+
+  # Address for gRPC server. Must differ from internalPort to avoid bind conflict.
+  grpcPort: ":9091"
+
+  # TLS certificate and key. Leave empty for plain HTTP (development mode).
+  # To enable HTTPS, generate a self-signed cert:
+  #   mkdir -p certs && openssl req -x509 -newkey rsa:4096 \
+  #     -keyout certs/server.key -out certs/server.crt \
+  #     -days 365 -nodes -subj '/CN=localhost'
+  # certFile: "certs/server.crt"
+  # keyFile: "certs/server.key"
+  certFile: ""
+  keyFile: ""
+
+  # Timeouts — protect against slow clients and runaway queries.
+  readTimeout: "30s"
+  readHeaderTimeout: "5s"   # Slow-loris protection
+  writeTimeout: "30s"
+  shutdownTimeout: "30s"
+
+  # Maximum number of bytes to read from request headers. Default: 16 KiB.
+  maxHeaderBytes: 16384
+
+auth:
+  # Docker image ships with authentication ENABLED so the server is permitted
+  # to bind to :8080 (non-localhost). The server refuses to start on a
+  # non-localhost address with empty keyHashes.
+  # ROTATE THIS KEY for any real deployment:
+  #   echo -n "your-secret-api-key" | sha256sum
+  keyHashes:
+    - "8430521c18caa3ef59a03b1177979fd31172f04aaafc8b509239a8e3f6258b95"
+
+rateLimit:
+  # Search endpoint: 100 req/s sustained, burst up to 200.
+  searchRPS: 100
+  searchBurst: 200
+
+  # Insert endpoint: 50 req/s sustained, burst up to 100.
+  # Lower than search because inserts touch the WAL and may trigger rebuilds.
+  insertRPS: 50
+  insertBurst: 100
+
+storage:
+  # Root directory for all on-disk data: WAL files, segments, SQLite database.
+  dataDir: "./data"
+
+  # Maximum number of vectors to pre-allocate in the memory-mapped file.
+  # Each float32 vector of dimension D consumes 4*D bytes.
+  # At 768D: 1,000,000 vectors = ~3 GB of mmap space.
+  mmapCapacity: 1000000
+
+index:
+  # Active index type. Options: "flat", "ivf", "hnsw"
+  # - flat: brute-force, perfect recall, O(N) search — use for N < 100k or correctness testing
+  # - ivf:  inverted file index, sub-linear search with tunable recall via nprobe
+  # - hnsw: hierarchical navigable small world graph, best recall/speed tradeoff
+  type: "flat"
+
+  # IVF: number of Voronoi cells (clusters). Rule of thumb: sqrt(N).
+  # For 1M vectors: numClusters = 1000. Re-run K-Means after major data changes.
+  numClusters: 256
+
+  # IVF: number of cells to probe at search time.
+  # Higher nprobe = better recall but slower search.
+  # Calibrate using the recall benchmark at each nprobe value.
+  defaultNprobe: 5
+
+  # HNSW: maximum bidirectional connections per node per layer.
+  # Range: 8–48. Lower M = less memory; higher M = better recall.
+  # m=16 is the standard starting point validated across many datasets.
+  m: 16
+
+  # HNSW: beam width during graph construction.
+  # Must be > m. Higher = better graph quality + slower inserts.
+  # Typical range: 100–500. 200 balances quality and insert speed.
+  efConstruction: 200
+
+  # HNSW: beam width during search (efSearch).
+  # Higher = better recall + slower search. Must be >= k.
+  defaultEf: 50
+
+  # Fraction of soft-deleted vectors that triggers automatic Rebuild().
+  # At 0.10, a Rebuild is triggered when 10% of indexed vectors are tombstoned.
+  dirtyThreshold: 0.10
+
+gc:
+  # Go runtime GC target percentage. Passed to runtime.SetGCPercent().
+  # 100 = default (GC when heap grows 100% above live set).
+  # Increase to 200 for workloads with large stable mmap memory.
+  percent: 100
+
+bloomFilter:
+  # Enable bloom filters on compacted segment files for fast negative lookups.
+  # When enabled, a .bloom sidecar file is created alongside each segment.
+  # Before reading a segment, the bloom filter is checked — if the ID is
+  # definitely not present, the disk read is skipped entirely.
+  enabled: true
+
+  # Target false positive rate (0-1). Lower = larger bloom file, fewer wasted reads.
+  # 0.01 (1%) is the sweet spot for most workloads.
+  falsePositiveRate: 0.01
+
+  # Minimum vector count before a bloom filter is created.
+  # Below this threshold, the overhead of the bloom file isn't justified.
+  minVectors: 1024
+
+walSync:
+  # Controls when WAL writes are fsynced to disk.
+  # - "per-write": fsync after every write (safest, default)
+  # - "delayed":   batch fsyncs on a configurable delay (faster, small data loss window)
+  # - "none":      never fsync (fastest, risk data loss on crash — benchmarking only)
+  syncMode: "per-write"
+
+  # Delay before a batched WAL checkpoint in "delayed" mode.
+  # Only effective when syncMode is "delayed".
+  # Recommended: 1-10ms. Higher = better throughput, larger data loss window.
+  syncDelay: "0s"
+
+cluster:
+  # Enable distributed mode. When false, runs as a single-node server.
+  enabled: false
+
+  # This node's unique identifier in the cluster.
+  nodeID: "node-1"
+
+  # Number of replicas for each collection.
+  replicationFactor: 3
+
+  # Virtual nodes per physical node in the consistent hash ring.
+  # Higher = better load distribution. 150 is a good default.
+  virtualNodes: 150
+
+  # Default consistency level for search operations: "one", "quorum", "all"
+  defaultReadConsistency: "one"
+
+  # Default consistency level for insert operations: "one", "quorum", "all"
+  defaultWriteConsistency: "one"
+
+gossip:
+  # UDP port for gossip protocol messages. Default: 7946
+  port: 7946
+
+  # Number of random peers to gossip to per round. Default: 3
+  fanout: 3
+
+  # Maximum number of events to track for deduplication. Default: 5000
+  maxSeen: 5000
+
+  # TTL for seen events (prevents re-processing). Default: "30s"
+  seenExpiry: "30s"
+
+  # How often to gossip membership changes. Default: "1s"
+  probeInterval: "1s"
+
+failureDetection:
+  # How often to check node health. Default: "1s"
+  interval: "1s"
+
+  # Probe timeout for individual nodes. Default: "500ms"
+  timeout: "500ms"
+
+  # How long since last heartbeat before marking suspect. Default: "5s"
+  suspectAfter: "5s"
+
+  # How long since last heartbeat before marking dead. Default: "15s"
+  deadAfter: "15s"
+
+migration:
+  # Number of vectors per migration batch. Default: 1000
+  batchSize: 1000
+
+  # Number of concurrent migration workers. Default: 4
+  parallelism: 4
+
+  # Retry count per batch on failure. Default: 3
+  maxRetries: 3

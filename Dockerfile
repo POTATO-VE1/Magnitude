@@ -40,8 +40,8 @@ COPY --from=builder /build/magnitude /app/magnitude
 RUN mkdir -p /app/data /app/certs && \
     chown -R magnitude:magnitude /app
 
-# Copy default config
-COPY config.yaml /app/config.yaml
+# Copy default config (Docker variant has authentication enabled)
+COPY config.docker.yaml /app/config.yaml
 
 USER magnitude
 
