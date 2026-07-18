@@ -5,6 +5,9 @@ WORKDIR /build
 
 ENV CGO_CFLAGS_ALLOW="-mavx2|-mfma|-O3"
 
+# CGO is needed for SIMD distance kernels (AVX2/NEON); install the C toolchain.
+RUN apk add --no-cache gcc musl-dev
+
 # Cache dependencies first (layer changes rarely)
 COPY go.mod go.sum ./
 RUN go mod download
