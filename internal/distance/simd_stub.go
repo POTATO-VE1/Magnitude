@@ -1,5 +1,5 @@
 //go:build (!amd64 && !arm64) || (arm64 && !cgo)
-// +build !amd64,!arm64
+// +build !amd64,!arm64 arm64,!cgo
 
 package distance
 

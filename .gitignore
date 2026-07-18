@@ -58,6 +58,10 @@ context.md
 
 # ── Compiled binary ──
 server
+magnitude
+
+# ── Downloaded image datasets (too large for git) ──
+images/
 
 # ── Scratch / internal docs (not for repo) ──
 scratch/
